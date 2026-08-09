@@ -2297,15 +2297,6 @@ sys.path.insert(0, '.')
 import numpy as np
 import matplotlib.pyplot as plt
 
-import (
-    CATEGORY_ANCHORS_VAD, SEED_EXAMPLES, CATEGORIES,
-    EmotionalMapper, DiaryMoodClassifier,
-    deterministic_palette, PRESET_DEFS, preset_palette,
-    ArtColorModel, CVAEArtModel, ArchiveClustering, EvolutionForecaster,
-    GenerativeArtImageModel, STYLE_NAMES,
-    print_summary_table, print_full_report,
-)
-
 clf = DiaryMoodClassifier()
 print(f"Training set: {clf.training_set_size()} sentences (all synthetic)")
 
