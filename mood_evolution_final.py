@@ -2297,9 +2297,6 @@ sys.path.insert(0, '.')
 import numpy as np
 import matplotlib.pyplot as plt
 
-clf = DiaryMoodClassifier()
-print(f"Training set: {clf.training_set_size()} sentences (all synthetic)")
-
 """Diary entry analysis — Multinomial Naive Bayes
 
 Trained on `SEED_EXAMPLES`: **44 hand-written synthetic sentences.** Not
