@@ -2306,7 +2306,6 @@ for text in [
     "Back-to-back meetings. My chest is tight and my mind keeps racing.",
     "A peaceful morning. Slow coffee, gentle light. I feel safe and settled.",
 ]:
-    r = clf.analyze(text)
     print(f"\n> {text}")
     print(f"  top category: {r['top_category']}  VAD=({r['valence']:+.2f}, {r['arousal']:+.2f}, {r['dominance']:+.2f})")
 
