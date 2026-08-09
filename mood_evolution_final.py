@@ -2297,7 +2297,7 @@ sys.path.insert(0, '.')
 import numpy as np
 import matplotlib.pyplot as plt
 
-from mood_evolution import (
+import (
     CATEGORY_ANCHORS_VAD, SEED_EXAMPLES, CATEGORIES,
     EmotionalMapper, DiaryMoodClassifier,
     deterministic_palette, PRESET_DEFS, preset_palette,
