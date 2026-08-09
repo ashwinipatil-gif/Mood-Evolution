@@ -11,8 +11,6 @@ Original file is located at
 Install dependencies
 """
 
-!pip install -q scikit-learn numpy torch matplotlib pillow streamlit pyngrok
-
 # Commented out IPython magic to ensure Python compatibility.
 # %%writefile mood_evolution.py
 # 
