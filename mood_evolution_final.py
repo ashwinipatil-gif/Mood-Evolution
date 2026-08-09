@@ -2305,7 +2305,6 @@ from mood_evolution import (
     GenerativeArtImageModel, STYLE_NAMES,
     print_summary_table, print_full_report,
 )
-from mood_evolution import DiaryMoodClassifier
 
 clf = DiaryMoodClassifier()
 print(f"Training set: {clf.training_set_size()} sentences (all synthetic)")
