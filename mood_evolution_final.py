@@ -2301,7 +2301,7 @@ import matplotlib.pyplot as plt
 
 Trained on `SEED_EXAMPLES`: **44 hand-written synthetic sentences.** Not
 real diary data. `.learn(text, category)` is the online correction hook.
-"""
+
 for text in [
     "Back-to-back meetings. My chest is tight and my mind keeps racing.",
     "A peaceful morning. Slow coffee, gentle light. I feel safe and settled.",
