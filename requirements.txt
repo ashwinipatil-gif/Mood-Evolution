@@ -4,3 +4,5 @@ torch
 matplotlib
 pillow
 streamlit
+scipy
+supabase
