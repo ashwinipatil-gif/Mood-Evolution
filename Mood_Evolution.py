@@ -915,14 +915,6 @@ def save_image_art_model(user_id, model):
     _save_pickle(_user_path(user_id, "image_art_model.pkl"), model)
 
 
-def load_entry_history(user_id):
-    path = _user_path(user_id, "entries.json")
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return []
-
-
 DB_PATH = os.path.join(USER_DIR, "analysis.db")
 
 
@@ -970,15 +962,64 @@ def _log_entry_to_sql(user_id, entry):
         conn.close()
 
 
+# --- PERSISTENT STORAGE VIA SUPABASE / CLOUD DATABASE ---
+from supabase import create_client
+
+def _get_supabase_client():
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if url and key:
+        return create_client(url, key)
+    return None
+
+def load_entry_history(user_id):
+    supabase = _get_supabase_client()
+    if supabase:
+        try:
+            res = supabase.table("diary_entries").select("*").eq("user_id", user_id).execute()
+            return res.data or []
+        except Exception as e:
+            print(f"Error fetching from cloud DB: {e}")
+
+    # Fallback to local files if cloud DB credentials are not set
+    path = _user_path(user_id, "entries.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return []
+
 def append_entry(user_id, entry):
+    # 1. Always load and append to existing history
     history = load_entry_history(user_id)
     history.append(entry)
+
+    # 2. Try saving to Persistent Supabase Cloud DB
+    supabase = _get_supabase_client()
+    if supabase:
+        try:
+            db_row = {
+                "user_id": user_id,
+                "date": entry.get("date"),
+                "text": entry.get("text"),
+                "valence": entry.get("valence"),
+                "arousal": entry.get("arousal"),
+                "dominance": entry.get("dominance"),
+                "clarity": entry.get("clarity"),
+                "turbulence": entry.get("turbulence"),
+                "top_category": entry.get("top_category"),
+                "corrected_category": entry.get("corrected_category"),
+                "reading": entry.get("reading"),
+                "style": entry.get("style"),
+                "palette": json.dumps(entry.get("palette"))
+            }
+            supabase.table("diary_entries").insert(db_row).execute()
+        except Exception as e:
+            print(f"WARNING: Supabase write failed: {e}")
+
+    # 3. Also write locally as temporary cache
     with open(_user_path(user_id, "entries.json"), "w") as f:
         json.dump(history, f, indent=2)
-    try:
-        _log_entry_to_sql(user_id, entry)
-    except Exception as e:
-        print(f"WARNING: SQL analysis log write failed: {e}")
+
     return history
 
 
