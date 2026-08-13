@@ -1,13 +1,3 @@
-"""
-mood_evolution.py
-============================================================
-ONE FILE, clearly sectioned. Fully compatible with Streamlit Community Cloud.
-Integrates:
-- LSTM Temporal Forecaster with Moving Average Baseline Comparison
-- Conditional VAE with Spherical Latent Space Interpolation (SLERP)
-- Unified Dependent Pipeline (Text -> Topic -> VAD -> History -> CVAE)
-- Systematic Pipeline Ablation Testing
-"""
 
 import os
 import json
@@ -38,7 +28,7 @@ except ImportError:
 
 
 # ==============================================================================
-# SECTION A — DATA & CONSTANTS
+# DATA & CONSTANTS
 # ==============================================================================
 CATEGORY_ANCHORS_VAD = {
     "stress":  (-0.55,  0.75, -0.30),
@@ -135,7 +125,7 @@ _READING_MAP = {
 
 
 # ==============================================================================
-# SECTION B — EMOTIONAL MAPPER
+# EMOTIONAL MAPPER
 # ==============================================================================
 class EmotionalMapper:
     def __init__(self, category_anchors=None):
@@ -195,7 +185,7 @@ class EmotionalMapper:
 
 
 # ==============================================================================
-# SECTION C — CURATED PALETTE MAPPER
+# CURATED PALETTE MAPPER
 # ==============================================================================
 def hsl_to_rgb01(h, s, l):
     h = (h % 360) / 360.0
@@ -261,7 +251,7 @@ def preset_palette(preset_key):
 
 
 # ==============================================================================
-# SECTION D — DIARY CLASSIFIER
+# DIARY CLASSIFIER
 # ==============================================================================
 class DiaryMoodClassifier:
     def __init__(self, seed_examples=None):
@@ -334,7 +324,7 @@ class DiaryMoodClassifier:
 
 
 # ==============================================================================
-# SECTION E — ART COLOUR MODEL
+# ART COLOUR MODEL
 # ==============================================================================
 def _random_theme_scores(rng):
     scores = {c: 0.0 for c in CATEGORIES}
@@ -421,7 +411,7 @@ class ArtColorModel:
 
 
 # ==============================================================================
-# SECTION F — CVAE ART MODEL & LATENT SPACE INTERPOLATION
+# CVAE ART MODEL & LATENT SPACE INTERPOLATION
 # ==============================================================================
 COND_DIM = 5
 X_DIM = 12
@@ -629,7 +619,7 @@ def visualize_cvae_latent_interpolation(cvae_model, vad_start, vad_end, steps=5)
 
 
 # ==============================================================================
-# SECTION G — ARCHIVE CLUSTERING
+# ARCHIVE CLUSTERING
 # ==============================================================================
 class ArchiveClustering:
     def __init__(self, n_clusters=4, random_state=42):
@@ -661,7 +651,7 @@ class ArchiveClustering:
 
 
 # ==============================================================================
-# SECTION H — LSTM TEMPORAL FORECASTER & BASELINE EVALUATION
+# LSTM TEMPORAL FORECASTER & BASELINE EVALUATION
 # ==============================================================================
 class MoodLSTM(nn.Module):
     def __init__(self, input_dim=3, hidden_dim=16, num_layers=1):
@@ -711,7 +701,7 @@ def evaluate_lstm_vs_baseline(history_vad_sequence):
 
 
 # ==============================================================================
-# SECTION I — ART IMAGE RENDERING
+# ART IMAGE RENDERING
 # ==============================================================================
 STYLE_NAMES = ["cloud", "silk", "prism", "aurora", "ink", "nebula"]
 
@@ -916,7 +906,7 @@ def frames_to_gif_bytes(frames, duration_ms=90):
 
 
 # ==============================================================================
-# SECTION J — PER-USER PERSISTENCE
+# PER-USER PERSISTENCE
 # ==============================================================================
 USER_DIR = os.environ.get(
     "MOOD_APP_DATA_DIR",
@@ -1081,7 +1071,7 @@ def append_entry(user_id, entry):
 
 
 # ==============================================================================
-# SECTION O — GENERATIVE ART IMAGE MODEL
+# GENERATIVE ART IMAGE MODEL
 # ==============================================================================
 IMG_SIZE = 48
 IMG_VAD_DIM = 5
@@ -1276,7 +1266,7 @@ class GenerativeArtImageModel:
 
 
 # ==============================================================================
-# SECTION K — UNIFIED DEPENDENT PIPELINE & ABLATION STUDY
+# UNIFIED DEPENDENT PIPELINE & ABLATION STUDY
 # ==============================================================================
 def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablations=None):
     """
@@ -1362,7 +1352,7 @@ def run_ablation_study(sample_text, mock_history):
 
 
 # ==============================================================================
-# SECTION N — STREAMLIT UI
+# STREAMLIT UI
 # ==============================================================================
 def _inject_theme_css():
     st.markdown("""
@@ -1432,7 +1422,8 @@ def run_streamlit_app():
     cvae_model = load_cvae_model(user_id)
     image_art_model = load_image_art_model(user_id)
 
-    tab_today, tab_archive = st.tabs(["Today", "Archive"])
+  
+    tab_today, tab_archive, tab_evolution = st.tabs(["Today", "Archive", "Evolution"])
 
     with tab_today:
         st.markdown(f"### {dt.date.today().strftime('%B %-d')}")
@@ -1440,7 +1431,7 @@ def run_streamlit_app():
 
         if st.button("Reflect & Generate", type="primary"):
             history = load_entry_history(user_id)
-            history_vads = [[e["valence"], e["arousal"], e["dominance"]] for e in history]
+            history_vads = [[e["valence"], e["arousal"], e["dominance"]] for e in history if "valence" in e]
 
             out = run_unified_pipeline(text, history_vads)
             palette = out["palette"]
@@ -1458,15 +1449,59 @@ def run_streamlit_app():
             art = render_abstract_art(palette, style="cloud")
             st.image(art, use_container_width=True)
 
+            if st.button("Seal this day"):
+                entry = {
+                    "date": dt.date.today().isoformat(),
+                    "text": text,
+                    "valence": out["target_vad"]["valence"],
+                    "arousal": out["target_vad"]["arousal"],
+                    "dominance": out["target_vad"]["dominance"],
+                    "top_category": out["topic"],
+                    "palette": palette
+                }
+                append_entry(user_id, entry)
+                st.success("Sealed! See Archive and Evolution tabs.")
+                st.rerun()
+
     with tab_archive:
         history = load_entry_history(user_id)
         if not history:
             st.info("No sealed entries yet.")
         else:
             for entry in reversed(history):
-                st.markdown(f"**{entry['date']}** — _{entry['top_category']}_")
+                st.markdown(f"**{entry['date']}** — _{entry.get('top_category', 'entry')}_")
                 st.caption(entry["text"])
                 st.divider()
+
+    with tab_evolution:
+        history = load_entry_history(user_id)
+        if len(history) < 2:
+            st.info("Need at least 2 sealed entries to show the evolution timeline and forecast.")
+        else:
+            st.markdown("### How your inner weather has moved.")
+            
+            # SVG Timeline
+            svg = _evolution_timeline_svg(history)
+            if svg:
+                st.markdown(svg, unsafe_allow_html=True)
+
+            # Sequence Data for Charting
+            days = list(range(len(history)))
+            valences = [e["valence"] for e in history if "valence" in e]
+
+            # Run LSTM / SMA Trend Forecast
+            history_vads = [[e["valence"], e["arousal"], e["dominance"]] for e in history if "valence" in e]
+            next_vad = evaluate_lstm_vs_baseline(history_vads)
+
+            fig, ax = plt.subplots(figsize=(7, 3.5))
+            ax.plot(days, valences, "o-", label="Logged Valence", color="#d9b673")
+            ax.plot([len(days)], [next_vad[0]], "o--", label="LSTM Predicted Next Day", color="#b9a3e0")
+            ax.axhline(0, color="gray", linewidth=0.5)
+            ax.set_xlabel("Day Index")
+            ax.set_ylabel("Valence Score")
+            ax.legend()
+            ax.set_title("VAD Temporal Sequence & Forecast")
+            st.pyplot(fig)
 
 
 # ==============================================================================
