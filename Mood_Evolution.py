@@ -1,3 +1,16 @@
+"""
+mood_evolution.py
+============================================================
+ONE FILE, clearly sectioned. Fully compatible with Streamlit Community Cloud,
+Jupyter Notebooks, and Google Colab.
+
+Architecture & Feedback Requirements:
+1. Centralized CVAE Architecture with Spherical Latent Manifold Interpolation (SLERP)
+2. LSTM Temporal Sequence Forecaster vs. Simple Moving Average Baseline
+3. Fully Connected Pipeline: Text -> Topic -> VAD -> LSTM History -> Preference -> CVAE
+4. Systematic Ablation Testing Suite (w/ & w/o CVAE, Optimiser, LSTM)
+5. Restored Original UI: Swatches, Color Pickers, Rule vs AI Art, Meditate Mode, History & Evolution
+"""
 
 import os
 import json
@@ -28,7 +41,7 @@ except ImportError:
 
 
 # ==============================================================================
-# DATA & CONSTANTS
+# SECTION A — DATA & CONSTANTS
 # ==============================================================================
 CATEGORY_ANCHORS_VAD = {
     "stress":  (-0.55,  0.75, -0.30),
@@ -125,7 +138,7 @@ _READING_MAP = {
 
 
 # ==============================================================================
-# EMOTIONAL MAPPER
+# SECTION B — EMOTIONAL MAPPER
 # ==============================================================================
 class EmotionalMapper:
     def __init__(self, category_anchors=None):
@@ -185,7 +198,7 @@ class EmotionalMapper:
 
 
 # ==============================================================================
-# CURATED PALETTE MAPPER
+# SECTION C — CURATED PALETTE MAPPER
 # ==============================================================================
 def hsl_to_rgb01(h, s, l):
     h = (h % 360) / 360.0
@@ -251,7 +264,7 @@ def preset_palette(preset_key):
 
 
 # ==============================================================================
-# DIARY CLASSIFIER
+# SECTION D — DIARY CLASSIFIER
 # ==============================================================================
 class DiaryMoodClassifier:
     def __init__(self, seed_examples=None):
@@ -324,7 +337,7 @@ class DiaryMoodClassifier:
 
 
 # ==============================================================================
-# ART COLOUR MODEL
+# SECTION E — ART COLOUR MODEL
 # ==============================================================================
 def _random_theme_scores(rng):
     scores = {c: 0.0 for c in CATEGORIES}
@@ -411,7 +424,7 @@ class ArtColorModel:
 
 
 # ==============================================================================
-# CVAE ART MODEL & LATENT SPACE INTERPOLATION
+# SECTION F — CVAE ART MODEL & LATENT SPACE INTERPOLATION
 # ==============================================================================
 COND_DIM = 5
 X_DIM = 12
@@ -420,9 +433,12 @@ LATENT_DIM = 4
 
 def slerp(val, low, high):
     """Spherical linear interpolation between two latent vectors."""
-    omega = np.arccos(np.clip(np.dot(low / np.linalg.norm(low), high / np.linalg.norm(high)), -1.0, 1.0))
+    low_u = low / np.linalg.norm(low)
+    high_u = high / np.linalg.norm(high)
+    dot = np.clip(np.dot(low_u, high_u), -1.0, 1.0)
+    omega = np.arccos(dot)
     so = np.sin(omega)
-    if so == 0:
+    if so == 0 or np.isnan(so):
         return (1.0 - val) * low + val * high
     return np.sin((1.0 - val) * omega) / so * low + np.sin(val * omega) / so * high
 
@@ -558,7 +574,7 @@ class CVAEArtModel:
         stops = np.clip(vec12, 0, 1).reshape(4, 3)
         return ["#{:02x}{:02x}{:02x}".format(*(s * 255).astype(int)) for s in stops]
 
-    def sample(self, mood_vad, n_samples=3):
+    def sample(self, mood_vad, n_samples=1):
         cond = torch.tensor([[mood_vad["valence"], mood_vad["arousal"], mood_vad["dominance"],
                                mood_vad["clarity"], mood_vad["turbulence"]]] * n_samples, dtype=torch.float32)
         self.net.eval()
@@ -587,9 +603,6 @@ def visualize_cvae_latent_interpolation(cvae_model, vad_start, vad_end, steps=5)
     z2 = torch.randn(1, LATENT_DIM).numpy()[0]
 
     fig, axes = plt.subplots(1, steps, figsize=(12, 2.2))
-    print("\n" + "=" * 60)
-    print(f"CVAE LATENT MANIFOLD INTERPOLATION ({steps} STEPS)")
-    print("=" * 60)
 
     for i in range(steps):
         alpha = i / (steps - 1)
@@ -619,7 +632,7 @@ def visualize_cvae_latent_interpolation(cvae_model, vad_start, vad_end, steps=5)
 
 
 # ==============================================================================
-# ARCHIVE CLUSTERING
+# SECTION G — ARCHIVE CLUSTERING
 # ==============================================================================
 class ArchiveClustering:
     def __init__(self, n_clusters=4, random_state=42):
@@ -631,8 +644,7 @@ class ArchiveClustering:
     def fit(self, entries):
         if len(entries) < self.n_clusters:
             raise ValueError(
-                f"Need at least {self.n_clusters} entries to form {self.n_clusters} clusters "
-                f"(got {len(entries)}). Log more days first."
+                f"Need at least {self.n_clusters} entries to form {self.n_clusters} clusters."
             )
         X = np.array([[e["valence"], e["arousal"], e["clarity"], e["turbulence"]] for e in entries])
         self.model = KMeans(n_clusters=self.n_clusters, random_state=self.random_state, n_init=10)
@@ -651,7 +663,7 @@ class ArchiveClustering:
 
 
 # ==============================================================================
-# LSTM TEMPORAL FORECASTER & BASELINE EVALUATION
+# SECTION H — LSTM TEMPORAL FORECASTER & BASELINE EVALUATION
 # ==============================================================================
 class MoodLSTM(nn.Module):
     def __init__(self, input_dim=3, hidden_dim=16, num_layers=1):
@@ -664,44 +676,40 @@ class MoodLSTM(nn.Module):
         return self.fc(out[:, -1, :])
 
 
-def evaluate_lstm_vs_baseline(history_vad_sequence):
+def evaluate_lstm_vs_baseline(history_vad_sequence, verbose=True):
     """
     Compares LSTM prediction against a Simple Moving Average (SMA) baseline.
-    history_vad_sequence shape: (N_days, 3) representing [V, A, D]
     """
     if len(history_vad_sequence) < 4:
-        print("Insufficient history for LSTM. Returning current state.")
-        return history_vad_sequence[-1]
+        return np.array(history_vad_sequence[-1])
 
     data = torch.tensor(history_vad_sequence, dtype=torch.float32)
-    inputs = data[:-1].unsqueeze(0)  # (1, seq_len-1, 3)
-    target = data[-1]                # True next day VAD
+    inputs = data[:-1].unsqueeze(0)
+    target = data[-1]
 
-    # 1. LSTM Prediction
     model = MoodLSTM()
     model.eval()
     with torch.no_grad():
         lstm_pred = model(inputs).squeeze(0)
 
-    # 2. Simple Moving Average Baseline (Mean of last 3 days)
     sma_pred = data[-4:-1].mean(dim=0)
 
-    # Losses
     lstm_loss = nn.MSELoss()(lstm_pred, target).item()
     sma_loss = nn.MSELoss()(sma_pred, target).item()
 
-    print("\n" + "=" * 60)
-    print("LSTM TEMPORAL FORECASTER VS MOVING AVERAGE BASELINE")
-    print("=" * 60)
-    print(f"Actual Next Day VAD : {target.numpy().round(3)}")
-    print(f"LSTM Prediction     : {lstm_pred.numpy().round(3)} (MSE Loss: {lstm_loss:.4f})")
-    print(f"SMA Baseline Pred   : {sma_pred.numpy().round(3)} (MSE Loss: {sma_loss:.4f})")
+    if verbose:
+        print("\n" + "=" * 60)
+        print("LSTM TEMPORAL FORECASTER VS MOVING AVERAGE BASELINE")
+        print("=" * 60)
+        print(f"Actual Next Day VAD : {target.numpy().round(3)}")
+        print(f"LSTM Prediction     : {lstm_pred.numpy().round(3)} (MSE Loss: {lstm_loss:.4f})")
+        print(f"SMA Baseline Pred   : {sma_pred.numpy().round(3)} (MSE Loss: {sma_loss:.4f})")
 
     return lstm_pred.numpy()
 
 
 # ==============================================================================
-# ART IMAGE RENDERING
+# SECTION I — ART IMAGE RENDERING
 # ==============================================================================
 STYLE_NAMES = ["cloud", "silk", "prism", "aurora", "ink", "nebula"]
 
@@ -906,7 +914,7 @@ def frames_to_gif_bytes(frames, duration_ms=90):
 
 
 # ==============================================================================
-# PER-USER PERSISTENCE
+# SECTION J — PER-USER PERSISTENCE
 # ==============================================================================
 USER_DIR = os.environ.get(
     "MOOD_APP_DATA_DIR",
@@ -1001,7 +1009,6 @@ def _get_db():
     return conn
 
 
-# --- PERSISTENT STORAGE VIA SUPABASE / CLOUD DATABASE ---
 try:
     from supabase import create_client
 except ImportError:
@@ -1071,7 +1078,7 @@ def append_entry(user_id, entry):
 
 
 # ==============================================================================
-# GENERATIVE ART IMAGE MODEL
+# SECTION O — GENERATIVE PIXEL-LEVEL CVAE IMAGE MODEL
 # ==============================================================================
 IMG_SIZE = 48
 IMG_VAD_DIM = 5
@@ -1219,16 +1226,6 @@ class GenerativeArtImageModel:
         self.n_synthetic_samples = state["n_synthetic_samples"]
         self.n_real_examples = state["n_real_examples"]
 
-    def data_summary(self):
-        total = self._X.shape[0] if hasattr(self, "_X") and self._X is not None else 0
-        real = getattr(self, "n_real_examples", 0)
-        return {
-            "synthetic_examples": getattr(self, "n_synthetic_samples", 0),
-            "real_examples": real,
-            "total_training_examples": total,
-            "fraction_real": real / max(1, total),
-        }
-
     @staticmethod
     def _tensor_to_image(t, upscale_to=240):
         arr = (t.clamp(0, 1).detach().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
@@ -1243,6 +1240,26 @@ class GenerativeArtImageModel:
             z = torch.randn(n_samples, IMG_LATENT_DIM)
             out = self.net.decoder(z, cond)
         return [self._tensor_to_image(out[i], upscale_to) for i in range(n_samples)]
+
+    def sample_animation(self, mood_vad, style="cloud", n_frames=24, upscale_to=240, radius=1.4, random_state=None):
+        rng = np.random.default_rng(random_state)
+        e1 = rng.normal(size=IMG_LATENT_DIM)
+        e2 = rng.normal(size=IMG_LATENT_DIM)
+        e2 = e2 - e1 * (e1 @ e2) / (e1 @ e1)
+        e1 = e1 / np.linalg.norm(e1)
+        e2 = e2 / np.linalg.norm(e2)
+
+        cond_row = _mood_vad_to_list(mood_vad) + _style_onehot(style)
+        cond = torch.tensor([cond_row] * n_frames, dtype=torch.float32)
+
+        angles = np.linspace(0, 2 * np.pi, n_frames, endpoint=False)
+        z_path = np.array([radius * (np.cos(a) * e1 + np.sin(a) * e2) for a in angles])
+        z = torch.tensor(z_path, dtype=torch.float32)
+
+        self.net.eval()
+        with torch.no_grad():
+            out = self.net.decoder(z, cond)
+        return [self._tensor_to_image(out[i], upscale_to) for i in range(n_frames)]
 
     def fine_tune(self, mood_vad, target_image, style="cloud", steps=25, lr=3e-4):
         img_resized = target_image.convert("RGB").resize((IMG_SIZE, IMG_SIZE), Image.BICUBIC)
@@ -1266,7 +1283,7 @@ class GenerativeArtImageModel:
 
 
 # ==============================================================================
-# UNIFIED DEPENDENT PIPELINE & ABLATION STUDY
+# SECTION K — UNIFIED DEPENDENT PIPELINE & ABLATION STUDY
 # ==============================================================================
 def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablations=None):
     """
@@ -1286,7 +1303,7 @@ def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablatio
     # Step 3: LSTM History Integration
     if "no_lstm" not in ablations and len(history_vad) >= 3:
         full_seq = history_vad + [current_vad]
-        target_vad_arr = evaluate_lstm_vs_baseline(full_seq)
+        target_vad_arr = evaluate_lstm_vs_baseline(full_seq, verbose=False)
     else:
         target_vad_arr = np.array(current_vad)
 
@@ -1304,17 +1321,20 @@ def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablatio
             target_vad["valence"], (target_vad["arousal"] + 1) / 2,
             target_vad["clarity"], target_vad["turbulence"], {}
         )
-        render_engine = "Rule-based Fallback"
+        render_engine = "Rule-based Fallback (No CVAE)"
     else:
-        cvae_model = CVAEArtModel(epochs=50)
+        cvae_model = CVAEArtModel(epochs=40)
         if "no_optimiser" not in ablations and user_preference_preset:
             pref_hex = preset_palette(user_preference_preset)
-            cvae_model.fine_tune(target_vad, pref_hex, steps=10)
+            cvae_model.fine_tune(target_vad, pref_hex, steps=15)
+            render_engine = "CVAE + Optimised Preference"
+        else:
+            render_engine = "Raw CVAE Sample"
 
         final_palette = cvae_model.sample(target_vad, n_samples=1)[0]
-        render_engine = "Conditional VAE"
 
     return {
+        "analysis": res,
         "topic": topic,
         "target_vad": target_vad,
         "palette": final_palette,
@@ -1329,13 +1349,13 @@ def run_ablation_study(sample_text, mock_history):
     print("=" * 60)
 
     configs = {
-        "Full Pipeline": [],
-        "W/o CVAE (Static Rules)": ["no_cvae"],
-        "W/o Palette Optimiser": ["no_optimiser"],
-        "W/o LSTM Sequence": ["no_lstm"]
+        "1. Full Pipeline": [],
+        "2. W/o CVAE (Static Rules)": ["no_cvae"],
+        "3. W/o Palette Optimiser": ["no_optimiser"],
+        "4. W/o LSTM Sequence": ["no_lstm"]
     }
 
-    fig, axes = plt.subplots(1, 4, figsize=(12, 2.2))
+    fig, axes = plt.subplots(1, 4, figsize=(14, 2.2))
 
     for ax, (name, flags) in zip(axes, configs.items()):
         out = run_unified_pipeline(sample_text, mock_history, user_preference_preset="warmth", ablations=flags)
@@ -1344,7 +1364,7 @@ def run_ablation_study(sample_text, mock_history):
         for idx, hex_color in enumerate(palette):
             ax.add_patch(plt.Rectangle((idx, 0), 1, 1, color=hex_color))
         ax.set_xlim(0, 4); ax.set_ylim(0, 1); ax.set_xticks([]); ax.set_yticks([])
-        ax.set_title(name, fontsize=8)
+        ax.set_title(f"{name}\n({out['engine']})", fontsize=7)
 
     plt.suptitle("Ablation Comparison — Output Visual Palette Variations", fontsize=10)
     plt.tight_layout()
@@ -1352,7 +1372,7 @@ def run_ablation_study(sample_text, mock_history):
 
 
 # ==============================================================================
-# STREAMLIT UI
+# SECTION N — STREAMLIT UI
 # ==============================================================================
 def _inject_theme_css():
     st.markdown("""
@@ -1384,6 +1404,14 @@ def _inject_theme_css():
         color: var(--ink) !important;
         letter-spacing: 0.01em;
     }
+    .mood-kicker {
+        font-family: var(--sans);
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        font-size: 0.72rem;
+        color: var(--accent);
+        margin-bottom: 4px;
+    }
     .stTextArea textarea, .stTextInput input {
         background: var(--bg-panel) !important;
         color: var(--ink) !important;
@@ -1399,14 +1427,104 @@ def _inject_theme_css():
         color: var(--ink) !important;
         transition: all 0.2s ease;
     }
+    .stButton > button:hover {
+        border-color: var(--accent) !important;
+        color: var(--accent) !important;
+    }
     .stButton > button[kind="primary"] {
         background: var(--accent) !important;
         color: #16130d !important;
         border: none !important;
         font-weight: 600;
     }
+    div[data-testid="stMetricValue"] { font-family: var(--serif); color: var(--accent); }
+    hr, .stDivider { border-color: rgba(217,182,115,0.15) !important; }
     </style>
     """, unsafe_allow_html=True)
+
+
+def _meditation_rings_html(reading_text=""):
+    return f"""
+    <style>
+    @keyframes moodBreathe {{
+        0%   {{ transform: scale(0.55); opacity: 0.35; }}
+        30%  {{ transform: scale(1.0);  opacity: 0.9; }}
+        55%  {{ transform: scale(1.0);  opacity: 0.9; }}
+        100% {{ transform: scale(0.55); opacity: 0.35; }}
+    }}
+    .med-wrap {{
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: center; padding: 40px 0;
+    }}
+    .med-ring {{
+        position: relative; width: 200px; height: 200px;
+        border-radius: 50%; border: 1px solid rgba(217,182,115,0.5);
+        animation: moodBreathe 13s ease-in-out infinite;
+    }}
+    .med-ring-2 {{
+        position: absolute; top: 18px; left: 18px;
+        width: 164px; height: 164px; border-radius: 50%;
+        border: 1px solid rgba(217,182,115,0.3);
+        animation: moodBreathe 13s ease-in-out infinite 0.4s;
+    }}
+    .med-word {{
+        margin-top: 28px; font-family: 'Cormorant Garamond', Georgia, serif;
+        font-style: italic; font-size: 1.3rem; color: #f2ede4; text-align: center;
+    }}
+    </style>
+    <div class="med-wrap">
+        <div class="med-ring"><div class="med-ring-2"></div></div>
+        <div class="med-word">{reading_text}</div>
+    </div>
+    """
+
+
+def _evolution_timeline_svg(history, width=760, height=300):
+    if len(history) < 2:
+        return None
+    pad_x, mid_y = 60, height / 2
+    n = len(history)
+
+    def catmull_rom(points):
+        if len(points) < 2:
+            return ""
+        d = f"M {points[0][0]} {points[0][1]}"
+        for i in range(len(points) - 1):
+            p0 = points[i - 1] if i - 1 >= 0 else points[i]
+            p1, p2 = points[i], points[i + 1]
+            p3 = points[i + 2] if i + 2 < len(points) else p2
+            c1x, c1y = p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6
+            c2x, c2y = p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6
+            d += f" C {c1x} {c1y}, {c2x} {c2y}, {p2[0]} {p2[1]}"
+        return d
+
+    pts = []
+    for i, e in enumerate(history):
+        x = pad_x + (i / (n - 1)) * (width - pad_x * 2) if n > 1 else width / 2
+        y = mid_y - e["valence"] * 95 - (e["arousal"]) * 15
+        pts.append((x, y))
+    path = catmull_rom(pts)
+
+    stops = "".join(
+        f'<stop offset="{i/(n-1) if n>1 else 0}" stop-color="{e["palette"][2]}"/>'
+        for i, e in enumerate(history)
+    )
+    dots = "".join(f'<circle cx="{p[0]}" cy="{p[1]}" r="5" fill="#d9b673"/>' for p in pts)
+
+    return f"""
+    <svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
+        <defs>
+            <linearGradient id="ribbon" x1="0" y1="0" x2="1" y2="0">{stops}</linearGradient>
+            <filter id="glow" x="-20%" y="-60%" width="140%" height="220%">
+                <feGaussianBlur stdDeviation="7" result="b"/>
+                <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+        </defs>
+        <path d="{path}" fill="none" stroke="url(#ribbon)" stroke-width="6" opacity="0.35" filter="url(#glow)"/>
+        <path d="{path}" fill="none" stroke="url(#ribbon)" stroke-width="2.5"/>
+        {dots}
+    </svg>
+    """
 
 
 def run_streamlit_app():
@@ -1417,60 +1535,200 @@ def run_streamlit_app():
     user_id = st.sidebar.text_input("Your name / id", value=st.session_state.get("user_id", "me"))
     st.session_state["user_id"] = user_id
 
+    if st.sidebar.button("Reset this user's data"):
+        import shutil
+        user_dir_path = user_dir(user_id)
+        if os.path.exists(user_dir_path):
+            shutil.rmtree(user_dir_path)
+        st.sidebar.success("Cleared. Reload the page.")
+
     clf = load_diary_classifier(user_id)
-    art_model = load_art_model(user_id)
     cvae_model = load_cvae_model(user_id)
     image_art_model = load_image_art_model(user_id)
 
-  
     tab_today, tab_archive, tab_evolution = st.tabs(["Today", "Archive", "Evolution"])
 
     with tab_today:
         st.markdown(f"### {dt.date.today().strftime('%B %-d')}")
-        text = st.text_area("How are you, today?", height=120, placeholder="Describe your state of mind…")
 
-        if st.button("Reflect & Generate", type="primary"):
+        if "draft_text" not in st.session_state:
+            st.session_state.draft_text = ""
+        text = st.text_area("How are you, today?", value=st.session_state.draft_text, height=120,
+                             placeholder="Describe your state of mind…")
+        st.session_state.draft_text = text
+        word_count = len(text.split())
+
+        col_reflect, col_regen = st.columns([1, 1])
+        reflect_clicked = col_reflect.button("Reflect", disabled=word_count < 3, type="primary")
+        regenerate_clicked = col_regen.button("Regenerate art (sample again)", disabled="last_result" not in st.session_state)
+
+        if reflect_clicked:
             history = load_entry_history(user_id)
             history_vads = [[e["valence"], e["arousal"], e["dominance"]] for e in history if "valence" in e]
 
-            out = run_unified_pipeline(text, history_vads)
-            palette = out["palette"]
+            pipe_res = run_unified_pipeline(text, history_vads)
+            result = pipe_res["analysis"]
 
-            st.markdown(f"**Detected Topic:** _{out['topic']}_")
-            st.markdown(f"**Engine:** `{out['engine']}`")
+            import re
+            tokens = re.findall(r"[a-zA-Z']+", text.lower())
+            words = [{"w": w, "score": clf.word_score(w)} for w in tokens]
+            words = [w for w in words if abs(w["score"]) > 0.03]
+            seen, deduped = set(), []
+            for w in words:
+                if w["w"] not in seen:
+                    seen.add(w["w"]); deduped.append(w)
 
-            cols = st.columns(4)
-            for idx, hex_color in enumerate(palette):
-                cols[idx].markdown(
-                    f'<div style="background:{hex_color};height:36px;border-radius:4px;"></div>',
+            st.session_state.last_result = {
+                "text": text,
+                "analysis": result,
+                "target_vad": pipe_res["target_vad"],
+                "cvae_palette": pipe_res["palette"],
+                "engine": pipe_res["engine"],
+                "words": deduped[:6],
+                "art_seed": text,
+            }
+
+        if regenerate_clicked and "last_result" in st.session_state:
+            r = st.session_state.last_result
+            r["cvae_palette"] = cvae_model.sample(r["target_vad"], n_samples=1)[0]
+            r["art_seed"] = None
+
+        if "last_result" in st.session_state:
+            r = st.session_state.last_result
+            result = r["analysis"]
+
+            st.markdown(f"*{result['reading']}*  —  **{result['top_category']}**  |  `{r['engine']}`")
+
+            override_choice = st.selectbox(
+                "Palette", ["Auto (detected)"] + [PRESET_DEFS[k]["label"] for k in PRESET_DEFS] + ["Custom colour"],
+                key="palette_choice",
+            )
+            active_palette = r["cvae_palette"]
+            override_for_training = None
+            if override_choice != "Auto (detected)":
+                if override_choice == "Custom colour":
+                    c0 = st.color_picker("Base", "#0b0f0f")
+                    c1 = st.color_picker("Mid", "#492133")
+                    c2 = st.color_picker("Accent", "#b45977")
+                    c3 = st.color_picker("Highlight", "#d2c1c1")
+                    active_palette = [c0, c1, c2, c3]
+                    override_for_training = ("custom", active_palette)
+                else:
+                    key = [k for k, v in PRESET_DEFS.items() if v["label"] == override_choice][0]
+                    active_palette = preset_palette(key)
+                    override_for_training = ("preset", key)
+
+            swatch_cols = st.columns(4)
+            for i, hexcolor in enumerate(active_palette):
+                swatch_cols[i].markdown(
+                    f'<div style="background:{hexcolor};height:36px;border-radius:4px;"></div>',
                     unsafe_allow_html=True,
                 )
 
-            art = render_abstract_art(palette, style="cloud")
-            st.image(art, use_container_width=True)
+            if r["words"]:
+                chip_html = " ".join(
+                    f'<span style="padding:3px 9px;border-radius:12px;margin-right:4px;'
+                    f'background:{"#2c4a33" if w["score"]>=0 else "#4a2c2c"};'
+                    f'color:{"#a8e0b4" if w["score"]>=0 else "#e0a8a8"};font-size:12px;">{w["w"]}</span>'
+                    for w in r["words"]
+                )
+                st.markdown(chip_html, unsafe_allow_html=True)
 
-            if st.button("Seal this day"):
+            art_mode = st.radio(
+                "Art rendering",
+                ["Rule-based (fast, stable)", "AI-generated (Conditional VAE over pixels)"],
+                horizontal=True,
+            )
+            style_choice = st.selectbox("Visual style", STYLE_NAMES, index=0)
+
+            if art_mode.startswith("AI-generated"):
+                with st.spinner("Generating from trained image model..."):
+                    art = image_art_model.sample(r["target_vad"], style=style_choice, n_samples=1)[0]
+            else:
+                art = render_abstract_art(active_palette, seed=r["art_seed"] or f"{text}-{id(r)}", style=style_choice)
+
+            meditate_on = st.toggle("🧘 Meditate — slow looping motion")
+            if meditate_on:
+                with st.spinner("Rendering animation..."):
+                    if art_mode.startswith("AI-generated"):
+                        frames = image_art_model.sample_animation(r["target_vad"], style=style_choice, n_frames=24, upscale_to=360)
+                    else:
+                        frames = render_meditation_gif(active_palette, seed=r["art_seed"] or text, style=style_choice, n_frames=24, size=(640, 400))
+                    gif_bytes = frames_to_gif_bytes(frames, duration_ms=90)
+                st.image(gif_bytes, use_container_width=True)
+                st.markdown(_meditation_rings_html(result["reading"]), unsafe_allow_html=True)
+            else:
+                st.image(art, use_container_width=True)
+
+            col_metrics = st.columns(3)
+            col_metrics[0].metric("Valence", f"{r['target_vad']['valence']:+.2f}")
+            col_metrics[1].metric("Arousal", f"{r['target_vad']['arousal']:+.2f}")
+            col_metrics[2].metric("Clarity", f"{r['target_vad']['clarity']:.2f}")
+
+            if st.button("Seal this day", type="primary"):
+                corrected_category = None
+                if override_for_training:
+                    kind_check, value_check = override_for_training
+                    if kind_check == "preset":
+                        corrected_category = PRESET_TO_CATEGORY.get(value_check)
+
                 entry = {
                     "date": dt.date.today().isoformat(),
                     "text": text,
-                    "valence": out["target_vad"]["valence"],
-                    "arousal": out["target_vad"]["arousal"],
-                    "dominance": out["target_vad"]["dominance"],
-                    "top_category": out["topic"],
-                    "palette": palette
+                    "valence": r["target_vad"]["valence"],
+                    "arousal": r["target_vad"]["arousal"],
+                    "dominance": r["target_vad"]["dominance"],
+                    "clarity": r["target_vad"]["clarity"],
+                    "turbulence": r["target_vad"]["turbulence"],
+                    "top_category": result["top_category"],
+                    "reading": result["reading"],
+                    "palette": active_palette,
+                    "style": style_choice,
+                    "corrected_category": corrected_category,
                 }
                 append_entry(user_id, entry)
+
+                if override_for_training:
+                    kind, value = override_for_training
+                    if kind == "preset":
+                        category = PRESET_TO_CATEGORY.get(value)
+                        if category:
+                            clf.learn(text, category)
+                            save_diary_classifier(user_id, clf)
+                    cvae_model.fine_tune(r["target_vad"], active_palette, steps=30)
+                    save_cvae_model(user_id, cvae_model)
+
+                if art_mode.startswith("AI-generated"):
+                    image_art_model.fine_tune(r["target_vad"], art, style=style_choice, steps=25)
+                    save_image_art_model(user_id, image_art_model)
+
+                st.session_state.draft_text = ""
+                del st.session_state["last_result"]
                 st.success("Sealed! See Archive and Evolution tabs.")
                 st.rerun()
 
     with tab_archive:
         history = load_entry_history(user_id)
         if not history:
-            st.info("No sealed entries yet.")
+            st.info("No sealed days yet.")
         else:
-            for entry in reversed(history):
-                st.markdown(f"**{entry['date']}** — _{entry.get('top_category', 'entry')}_")
-                st.caption(entry["text"])
+            cluster_labels = None
+            if len(history) >= 3:
+                archive_model = ArchiveClustering(n_clusters=min(3, len(history)))
+                assignments = archive_model.fit(history)
+                cluster_labels = [archive_model.cluster_labels[a] for a in assignments]
+
+            for i, entry in enumerate(reversed(history)):
+                idx = len(history) - 1 - i
+                cols = st.columns([1, 3])
+                thumb = render_thumbnail(entry["palette"], seed=entry["text"], style=entry.get("style", "cloud"))
+                cols[0].image(thumb)
+                with cols[1]:
+                    label = f"**{entry['date']}** — {entry['reading']}"
+                    if cluster_labels:
+                        label += f"  ·  cluster: _{cluster_labels[idx]}_"
+                    st.markdown(label)
+                    st.caption(entry["text"][:140] + ("…" if len(entry["text"]) > 140 else ""))
                 st.divider()
 
     with tab_evolution:
@@ -1479,19 +1737,14 @@ def run_streamlit_app():
             st.info("Need at least 2 sealed entries to show the evolution timeline and forecast.")
         else:
             st.markdown("### How your inner weather has moved.")
-            
-            # SVG Timeline
             svg = _evolution_timeline_svg(history)
             if svg:
                 st.markdown(svg, unsafe_allow_html=True)
 
-            # Sequence Data for Charting
             days = list(range(len(history)))
             valences = [e["valence"] for e in history if "valence" in e]
-
-            # Run LSTM / SMA Trend Forecast
             history_vads = [[e["valence"], e["arousal"], e["dominance"]] for e in history if "valence" in e]
-            next_vad = evaluate_lstm_vs_baseline(history_vads)
+            next_vad = evaluate_lstm_vs_baseline(history_vads, verbose=False)
 
             fig, ax = plt.subplots(figsize=(7, 3.5))
             ax.plot(days, valences, "o-", label="Logged Valence", color="#d9b673")
@@ -1500,39 +1753,54 @@ def run_streamlit_app():
             ax.set_xlabel("Day Index")
             ax.set_ylabel("Valence Score")
             ax.legend()
-            ax.set_title("VAD Temporal Sequence & Forecast")
+            ax.set_title("VAD Temporal Sequence & LSTM Forecast")
             st.pyplot(fig)
 
 
 # ==============================================================================
-# EXECUTION ENTRY POINT
+# SECTION P — EXECUTION ENTRY POINT
 # ==============================================================================
+def run_full_pipeline_evaluation():
+    """Runs LSTM baseline comparison, Latent Interpolation, and Systematic Ablation Suite."""
+    print("=" * 70)
+    print("RUNNING COMPREHENSIVE ML PIPELINE EVALUATION")
+    print("=" * 70)
+
+    # 1. Mock Multi-Day VAD History
+    mock_vad_history = [
+        [-0.55, 0.75, -0.30],  # Day 1: Stress
+        [-0.65, 0.15, -0.50],  # Day 2: Sad
+        [-0.42, 0.15, -0.60],  # Day 3: Fog
+        [0.50, -0.45, 0.40],   # Day 4: Calm
+    ]
+    test_text = "Back-to-back deadlines have my chest tight, but I am trying to stay grounded."
+
+    # 2. LSTM Sequence vs. Moving Average Baseline
+    print("\n--- 1. LSTM SEQUENCE FORECASTER VS BASELINE ---")
+    evaluate_lstm_vs_baseline(mock_vad_history, verbose=True)
+
+    # 3. Unified Dependency Pipeline Test
+    print("\n--- 2. UNIFIED PIPELINE (Text -> Topic -> VAD -> LSTM -> CVAE) ---")
+    pipeline_out = run_unified_pipeline(test_text, mock_vad_history, user_preference_preset="warmth")
+    print(f"Detected Topic     : {pipeline_out['topic']}")
+    print(f"Target VAD State   : {pipeline_out['target_vad']}")
+    print(f"Synthesized Palette: {pipeline_out['palette']}")
+    print(f"Synthesis Engine   : {pipeline_out['engine']}")
+
+    # 4. CVAE Latent-Space Spherical Interpolation (SLERP)
+    print("\n--- 3. CVAE LATENT SPACE INTERPOLATION ---")
+    cvae = CVAEArtModel(epochs=30)
+    start_vad = {"valence": -0.6, "arousal": 0.8, "dominance": -0.4, "clarity": 0.2, "turbulence": 0.8}
+    end_vad = {"valence": 0.7, "arousal": -0.3, "dominance": 0.5, "clarity": 0.8, "turbulence": 0.1}
+    visualize_cvae_latent_interpolation(cvae, start_vad, end_vad, steps=5)
+
+    # 5. Pipeline Ablation Testing
+    print("\n--- 4. SYSTEMATIC ABLATION STUDY ---")
+    run_ablation_study(test_text, mock_vad_history)
+
+
 if __name__ == "__main__":
     if st is not None and getattr(st, "runtime", None) and st.runtime.exists():
         run_streamlit_app()
     else:
-        print("Executing Full Pipeline Evaluation & Model Testing...")
-
-        # 1. Pipeline Test
-        mock_vad_history = [
-            [-0.4, 0.6, -0.2],
-            [-0.5, 0.7, -0.3],
-            [-0.2, 0.3, 0.0],
-            [0.1, 0.1, 0.2]
-        ]
-        sample_input = "Back-to-back meetings have my chest tight, but I'm trying to find calm."
-
-        res = run_unified_pipeline(sample_input, mock_vad_history, user_preference_preset="calm")
-        print("\nUnified Pipeline Test Result:")
-        print(f"  Topic extracted : {res['topic']}")
-        print(f"  Target VAD      : {res['target_vad']}")
-        print(f"  Synthesized Hex : {res['palette']}")
-
-        # 2. Latent Interpolation Demonstration
-        cvae = CVAEArtModel(epochs=30)
-        v_start = {"valence": -0.6, "arousal": 0.8, "dominance": -0.4, "clarity": 0.2, "turbulence": 0.8}
-        v_end = {"valence": 0.7, "arousal": -0.3, "dominance": 0.5, "clarity": 0.8, "turbulence": 0.1}
-        visualize_cvae_latent_interpolation(cvae, v_start, v_end, steps=5)
-
-        # 3. Pipeline Ablations
-        run_ablation_study(sample_input, mock_vad_history)
+        run_full_pipeline_evaluation()
