@@ -1,17 +1,3 @@
-"""
-mood_evolution.py
-============================================================
-ONE FILE, clearly sectioned. Fully compatible with Streamlit Community Cloud,
-Jupyter Notebooks, and Google Colab.
-
-Architecture & Feedback Requirements:
-1. Centralized CVAE Architecture with Spherical Latent Manifold Interpolation (SLERP)
-2. LSTM Temporal Sequence Forecaster vs. Simple Moving Average Baseline
-3. Fully Connected Pipeline: Text -> Topic -> VAD -> LSTM History -> Preference -> CVAE
-4. Systematic Ablation Testing Suite (w/ & w/o CVAE, Optimiser, LSTM)
-5. Restored Original UI: Swatches, Color Pickers, Rule vs AI Art, Meditate Mode, History & Evolution
-"""
-
 import os
 import json
 import sqlite3
@@ -530,6 +516,23 @@ class CVAEArtModel:
             loss.backward()
             opt.step()
 
+    def maybe_periodic_retrain(self, every=10, epochs=60, lr=1e-3):
+        """
+        fine_tune() only nudges the net with 30 Adam steps on a single new
+        example, and never revisits earlier real corrections together — the
+        growing self._X/self._C set otherwise just sits there unused. Every
+        `every`-th real correction, this runs a proper multi-epoch pass over
+        the FULL accumulated set (original synthetic data + every real
+        correction so far), the same way _train() is used in __init__, so
+        real corrections actually reinforce each other instead of each being
+        a small, easily-overwritten nudge in isolation.
+        Returns True if a periodic retrain ran, False otherwise.
+        """
+        if self.n_real_corrections > 0 and self.n_real_corrections % every == 0:
+            self._train(epochs, lr, verbose=False)
+            return True
+        return False
+
     def get_state(self):
         return {
             "net_state_dict": self.net.state_dict(),
@@ -604,6 +607,9 @@ def visualize_cvae_latent_interpolation(cvae_model, vad_start, vad_end, steps=5)
 
     fig, axes = plt.subplots(1, steps, figsize=(12, 2.2))
 
+    alphas, mean_r, mean_g, mean_b = [], [], [], []
+    print("\n--- SLERP interpolation: real captured hex + VAD per step ---")
+
     for i in range(steps):
         alpha = i / (steps - 1)
         z_interp = torch.tensor([slerp(alpha, z1, z2)], dtype=torch.float32)
@@ -620,6 +626,19 @@ def visualize_cvae_latent_interpolation(cvae_model, vad_start, vad_end, steps=5)
 
         palette_hex = cvae_model._rgb01_to_hex(generated_vec)
 
+        # generated_vec is 12 values = 4 swatches x [R,G,B] in [0,1]. Mean channel
+        # across the 4 swatches, at THIS alpha step -- this is the real number
+        # that was missing before: nothing previously computed or plotted this.
+        swatches = generated_vec.reshape(4, 3)
+        alphas.append(alpha)
+        mean_r.append(swatches[:, 0].mean())
+        mean_g.append(swatches[:, 1].mean())
+        mean_b.append(swatches[:, 2].mean())
+
+        print(f"alpha={alpha:.2f}  VAD=[{cond_interp[0]:.2f}, {cond_interp[1]:.2f}, "
+              f"{cond_interp[2]:.2f}]  palette={palette_hex}  "
+              f"mean_RGB=({mean_r[-1]:.3f}, {mean_g[-1]:.3f}, {mean_b[-1]:.3f})")
+
         ax = axes[i]
         for idx, hex_color in enumerate(palette_hex):
             ax.add_patch(plt.Rectangle((idx, 0), 1, 1, color=hex_color))
@@ -627,6 +646,20 @@ def visualize_cvae_latent_interpolation(cvae_model, vad_start, vad_end, steps=5)
         ax.set_title(f"α={alpha:.2f}", fontsize=8)
 
     plt.suptitle("CVAE Continuous Latent Space Trajectory (Mood Transition)", fontsize=10)
+    plt.tight_layout()
+    plt.show()
+
+    # The chart the original report claimed existed but the code never plotted --
+    # real mean R/G/B channel values across alpha, not an ASCII mockup.
+    fig2, ax2 = plt.subplots(figsize=(7, 3))
+    ax2.plot(alphas, mean_r, "o-", color="#c0392b", label="Red channel")
+    ax2.plot(alphas, mean_g, "o-", color="#27ae60", label="Green channel")
+    ax2.plot(alphas, mean_b, "o-", color="#2980b9", label="Blue channel")
+    ax2.set_xlabel("alpha (SLERP step)")
+    ax2.set_ylabel("Mean channel value (0-1)")
+    ax2.set_title("RGB channel drift across latent trajectory (real, not illustrative)")
+    ax2.set_ylim(0, 1)
+    ax2.legend()
     plt.tight_layout()
     plt.show()
 
@@ -676,36 +709,104 @@ class MoodLSTM(nn.Module):
         return self.fc(out[:, -1, :])
 
 
-def evaluate_lstm_vs_baseline(history_vad_sequence, verbose=True):
+def _generate_synthetic_vad_trajectories(n_sequences=800, seq_len=6, random_state=42):
     """
-    Compares LSTM prediction against a Simple Moving Average (SMA) baseline.
+    Synthetic VAD time series with mood inertia (autoregressive momentum) plus
+    noise, so there is an actual temporal pattern for the LSTM to learn —
+    unlike raw white noise, which would make training meaningless.
+    """
+    rng = np.random.default_rng(random_state)
+    sequences = []
+    for _ in range(n_sequences):
+        vad = rng.uniform(-0.5, 0.5, size=3)
+        momentum = rng.normal(0, 0.05, size=3)
+        seq = [vad.copy()]
+        for _ in range(seq_len - 1):
+            momentum = 0.7 * momentum + rng.normal(0, 0.08, size=3)
+            vad = np.clip(vad + momentum, -1, 1)
+            seq.append(vad.copy())
+        sequences.append(seq)
+    return np.array(sequences, dtype=np.float32)  # (n_sequences, seq_len, 3)
+
+
+class MoodTemporalForecaster:
+    """
+    Wraps MoodLSTM with an actual train/val loop, mirroring the persistence
+    pattern used by CVAEArtModel (get_state/load_state) so the trained weights
+    can be cached to disk instead of retrained on every pipeline call.
+    """
+
+    def __init__(self, hidden_dim=16, epochs=150, lr=1e-3, val_fraction=0.15,
+                 random_state=42):
+        torch.manual_seed(random_state)
+        self.net = MoodLSTM(hidden_dim=hidden_dim)
+        self.hidden_dim = hidden_dim
+        self.train_losses = []
+        self.val_losses = []
+        self._train(epochs, lr, val_fraction, random_state)
+
+    def _train(self, epochs, lr, val_fraction, random_state):
+        data = _generate_synthetic_vad_trajectories(random_state=random_state)
+        n_val = int(len(data) * val_fraction)
+        rng = np.random.default_rng(random_state)
+        idx = rng.permutation(len(data))
+        val_idx, train_idx = idx[:n_val], idx[n_val:]
+
+        X_train = torch.tensor(data[train_idx][:, :-1, :])
+        y_train = torch.tensor(data[train_idx][:, -1, :])
+        X_val = torch.tensor(data[val_idx][:, :-1, :])
+        y_val = torch.tensor(data[val_idx][:, -1, :])
+
+        opt = torch.optim.Adam(self.net.parameters(), lr=lr)
+        loss_fn = nn.MSELoss()
+
+        for epoch in range(epochs):
+            self.net.train()
+            opt.zero_grad()
+            pred = self.net(X_train)
+            loss = loss_fn(pred, y_train)
+            loss.backward()
+            opt.step()
+            self.train_losses.append(loss.item())
+
+            self.net.eval()
+            with torch.no_grad():
+                val_loss = loss_fn(self.net(X_val), y_val).item()
+            self.val_losses.append(val_loss)
+
+    def predict(self, history_vad_sequence):
+        """Predict next VAD state from a real history sequence (min length 3)."""
+        self.net.eval()
+        x = torch.tensor([history_vad_sequence], dtype=torch.float32)
+        with torch.no_grad():
+            return self.net(x).squeeze(0).numpy()
+
+    def get_state(self):
+        return {"net_state_dict": self.net.state_dict(), "hidden_dim": self.hidden_dim}
+
+    def load_state(self, state):
+        self.net = MoodLSTM(hidden_dim=state["hidden_dim"])
+        self.net.load_state_dict(state["net_state_dict"])
+
+
+def evaluate_forecaster_vs_baseline(forecaster, history_vad_sequence, verbose=True):
+    """
+    Compares the TRAINED forecaster's prediction against a 3-day SMA baseline.
+    Falls back to the last observed state (not a random LSTM output) when
+    history is too short — a random guess is not a meaningful baseline.
     """
     if len(history_vad_sequence) < 4:
         return np.array(history_vad_sequence[-1])
 
-    data = torch.tensor(history_vad_sequence, dtype=torch.float32)
-    inputs = data[:-1].unsqueeze(0)
-    target = data[-1]
-
-    model = MoodLSTM()
-    model.eval()
-    with torch.no_grad():
-        lstm_pred = model(inputs).squeeze(0)
-
-    sma_pred = data[-4:-1].mean(dim=0)
-
-    lstm_loss = nn.MSELoss()(lstm_pred, target).item()
-    sma_loss = nn.MSELoss()(sma_pred, target).item()
+    data = np.array(history_vad_sequence, dtype=np.float32)
+    inputs, target = data[:-1], data[-1]
+    pred = forecaster.predict(inputs)
+    sma_pred = data[-4:-1].mean(axis=0)
 
     if verbose:
-        print("\n" + "=" * 60)
-        print("LSTM TEMPORAL FORECASTER VS MOVING AVERAGE BASELINE")
-        print("=" * 60)
-        print(f"Actual Next Day VAD : {target.numpy().round(3)}")
-        print(f"LSTM Prediction     : {lstm_pred.numpy().round(3)} (MSE Loss: {lstm_loss:.4f})")
-        print(f"SMA Baseline Pred   : {sma_pred.numpy().round(3)} (MSE Loss: {sma_loss:.4f})")
-
-    return lstm_pred.numpy()
+        print(f"Forecaster MSE: {np.mean((pred - target) ** 2):.4f} | "
+              f"SMA MSE: {np.mean((sma_pred - target) ** 2):.4f}")
+    return pred
 
 
 # ==============================================================================
@@ -1285,10 +1386,37 @@ class GenerativeArtImageModel:
 # ==============================================================================
 # SECTION K — UNIFIED DEPENDENT PIPELINE & ABLATION STUDY
 # ==============================================================================
+_CVAE_SINGLETON = None
+_FORECASTER_SINGLETON = None
+
+
+def _get_cvae_model():
+    global _CVAE_SINGLETON
+    if _CVAE_SINGLETON is None:
+        _CVAE_SINGLETON = CVAEArtModel(epochs=40)
+    return _CVAE_SINGLETON
+
+
+def _get_forecaster():
+    global _FORECASTER_SINGLETON
+    if _FORECASTER_SINGLETON is None:
+        _FORECASTER_SINGLETON = MoodTemporalForecaster(epochs=150)
+    return _FORECASTER_SINGLETON
+
+
 def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablations=None):
     """
     Executes end-to-end dependency chain:
-    Text -> Classifier (Topic) -> Mapper (VAD) -> LSTM (History Prediction) -> CVAE (Visual)
+    Text -> Classifier (Topic) -> Mapper (VAD) -> Forecaster (History) -> CVAE (Visual)
+
+    Forecaster: MoodLSTM trained on synthetic mood-inertia trajectories
+    (see MoodTemporalForecaster), not on real user history — history is
+    used only at inference time as the input sequence.
+
+    CVAE: a stochastic, VAD-conditioned wrapper around the rule-based
+    deterministic_palette() function, optionally personalized via a
+    lightweight fine_tune() on one user-chosen preset. It is not learning
+    palette structure from real user preference data at scale.
     """
     ablations = ablations or []
 
@@ -1300,10 +1428,11 @@ def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablatio
     # Step 2: VAD Mapping
     current_vad = [res["valence"], res["arousal"], res["dominance"]]
 
-    # Step 3: LSTM History Integration
+    # Step 3: Trained Forecaster History Integration
     if "no_lstm" not in ablations and len(history_vad) >= 3:
         full_seq = history_vad + [current_vad]
-        target_vad_arr = evaluate_lstm_vs_baseline(full_seq, verbose=False)
+        forecaster = _get_forecaster()
+        target_vad_arr = evaluate_forecaster_vs_baseline(forecaster, full_seq, verbose=False)
     else:
         target_vad_arr = np.array(current_vad)
 
@@ -1323,7 +1452,7 @@ def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablatio
         )
         render_engine = "Rule-based Fallback (No CVAE)"
     else:
-        cvae_model = CVAEArtModel(epochs=40)
+        cvae_model = _get_cvae_model()   # cached, not retrained per call
         if "no_optimiser" not in ablations and user_preference_preset:
             pref_hex = preset_palette(user_preference_preset)
             cvae_model.fine_tune(target_vad, pref_hex, steps=15)
@@ -1340,7 +1469,6 @@ def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablatio
         "palette": final_palette,
         "engine": render_engine
     }
-
 
 def run_ablation_study(sample_text, mock_history):
     """Evaluates output variance across 4 ablation states."""
@@ -1696,6 +1824,8 @@ def run_streamlit_app():
                             clf.learn(text, category)
                             save_diary_classifier(user_id, clf)
                     cvae_model.fine_tune(r["target_vad"], active_palette, steps=30)
+                    if cvae_model.maybe_periodic_retrain():
+                        st.toast(f"Periodic retrain: {cvae_model.n_real_corrections} real corrections folded in together.")
                     save_cvae_model(user_id, cvae_model)
 
                 if art_mode.startswith("AI-generated"):
@@ -1729,6 +1859,54 @@ def run_streamlit_app():
                         label += f"  ·  cluster: _{cluster_labels[idx]}_"
                     st.markdown(label)
                     st.caption(entry["text"][:140] + ("…" if len(entry["text"]) > 140 else ""))
+
+                    with st.expander("Correct this entry"):
+                        correction_choice = st.selectbox(
+                            "What should this day have been?",
+                            ["No change"] + [PRESET_DEFS[k]["label"] for k in PRESET_DEFS] + ["Custom colour"],
+                            key=f"archive_correction_{idx}",
+                        )
+                        corrected_palette = None
+                        if correction_choice == "Custom colour":
+                            cc0 = st.color_picker("Base", entry["palette"][0], key=f"archive_c0_{idx}")
+                            cc1 = st.color_picker("Mid", entry["palette"][1], key=f"archive_c1_{idx}")
+                            cc2 = st.color_picker("Accent", entry["palette"][2], key=f"archive_c2_{idx}")
+                            cc3 = st.color_picker("Highlight", entry["palette"][3], key=f"archive_c3_{idx}")
+                            corrected_palette = [cc0, cc1, cc2, cc3]
+
+                        if st.button("Apply correction", key=f"archive_apply_{idx}"):
+                            if correction_choice == "No change":
+                                st.warning("Pick a mood preset or a custom colour first.")
+                            else:
+                                entry_vad = {
+                                    "valence": entry["valence"], "arousal": entry["arousal"],
+                                    "dominance": entry["dominance"], "clarity": entry["clarity"],
+                                    "turbulence": entry["turbulence"],
+                                }
+                                if correction_choice == "Custom colour":
+                                    # Same as a Today-tab "custom" override: Tier 2 (CVAE) only.
+                                    cvae_model.fine_tune(entry_vad, corrected_palette, steps=30)
+                                    retrained = cvae_model.maybe_periodic_retrain()
+                                    save_cvae_model(user_id, cvae_model)
+                                    msg = "Tier 2 updated: CVAE fine-tuned on this correction."
+                                    if retrained:
+                                        msg += f" Periodic retrain also ran ({cvae_model.n_real_corrections} real corrections so far)."
+                                    st.success(msg)
+                                else:
+                                    # Same as a Today-tab "preset" override: Tier 1 + Tier 2.
+                                    preset_key = [k for k, v in PRESET_DEFS.items() if v["label"] == correction_choice][0]
+                                    category = PRESET_TO_CATEGORY.get(preset_key)
+                                    preset_hex = preset_palette(preset_key)
+                                    if category:
+                                        clf.learn(entry["text"], category)
+                                        save_diary_classifier(user_id, clf)
+                                    cvae_model.fine_tune(entry_vad, preset_hex, steps=30)
+                                    retrained = cvae_model.maybe_periodic_retrain()
+                                    save_cvae_model(user_id, cvae_model)
+                                    msg = "Tier 1 + Tier 2 updated: classifier and CVAE both retrained on this correction."
+                                    if retrained:
+                                        msg += f" Periodic retrain also ran ({cvae_model.n_real_corrections} real corrections so far)."
+                                    st.success(msg)
                 st.divider()
 
     with tab_evolution:
@@ -1744,7 +1922,8 @@ def run_streamlit_app():
             days = list(range(len(history)))
             valences = [e["valence"] for e in history if "valence" in e]
             history_vads = [[e["valence"], e["arousal"], e["dominance"]] for e in history if "valence" in e]
-            next_vad = evaluate_lstm_vs_baseline(history_vads, verbose=False)
+            forecaster = _get_forecaster()
+            next_vad = evaluate_forecaster_vs_baseline(forecaster, history_vads, verbose=False)
 
             fig, ax = plt.subplots(figsize=(7, 3.5))
             ax.plot(days, valences, "o-", label="Logged Valence", color="#d9b673")
@@ -1776,11 +1955,14 @@ def run_full_pipeline_evaluation():
     test_text = "Back-to-back deadlines have my chest tight, but I am trying to stay grounded."
 
     # 2. LSTM Sequence vs. Moving Average Baseline
-    print("\n--- 1. LSTM SEQUENCE FORECASTER VS BASELINE ---")
-    evaluate_lstm_vs_baseline(mock_vad_history, verbose=True)
+    print("\n--- 1. TRAINED FORECASTER VS MOVING AVERAGE BASELINE ---")
+    forecaster = _get_forecaster()
+    print(f"Forecaster train loss (final): {forecaster.train_losses[-1]:.4f} | "
+          f"val loss (final): {forecaster.val_losses[-1]:.4f}")
+    evaluate_forecaster_vs_baseline(forecaster, mock_vad_history, verbose=True)
 
     # 3. Unified Dependency Pipeline Test
-    print("\n--- 2. UNIFIED PIPELINE (Text -> Topic -> VAD -> LSTM -> CVAE) ---")
+    print("\n--- 2. UNIFIED PIPELINE (Text -> Topic -> VAD -> Forecaster -> CVAE) ---")
     pipeline_out = run_unified_pipeline(test_text, mock_vad_history, user_preference_preset="warmth")
     print(f"Detected Topic     : {pipeline_out['topic']}")
     print(f"Target VAD State   : {pipeline_out['target_vad']}")
