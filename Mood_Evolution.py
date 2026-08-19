@@ -1,4 +1,3 @@
-
 import os
 import json
 import sqlite3
@@ -811,7 +810,10 @@ class MoodTemporalForecaster:
 
 def evaluate_forecaster_vs_baseline(forecaster, history_vad_sequence, verbose=True):
     """
-    Compares the TRAINED forecaster's prediction against a 3-day SMA baseline.
+    Compares the TRAINED forecaster's prediction against a 3-day SMA baseline
+    on ONE sequence. This is illustrative, not a benchmark -- a single point
+    estimate proves nothing about typical performance. See
+    evaluate_forecaster_multi_sequence() for the actual benchmark.
     Falls back to the last observed state (not a random LSTM output) when
     history is too short — a random guess is not a meaningful baseline.
     """
@@ -825,8 +827,62 @@ def evaluate_forecaster_vs_baseline(forecaster, history_vad_sequence, verbose=Tr
 
     if verbose:
         print(f"Forecaster MSE: {np.mean((pred - target) ** 2):.4f} | "
-              f"SMA MSE: {np.mean((sma_pred - target) ** 2):.4f}")
+              f"SMA MSE: {np.mean((sma_pred - target) ** 2):.4f}  (single sequence -- illustrative only)")
     return pred
+
+
+def evaluate_forecaster_multi_sequence(forecaster, n_sequences=40, seq_len=6, random_state=999, verbose=True):
+    """
+    The REAL benchmark. Evaluates the forecaster against the SMA baseline
+    across many HELD-OUT sequences, generated with random_state=999 --
+    deliberately different from the training random_state (42, see
+    MoodTemporalForecaster._train), so this is genuinely unseen data rather
+    than a re-draw of the training distribution with the same samples.
+
+    Reports mean +/- std MSE for both methods and the win rate (fraction of
+    sequences where the forecaster actually beats SMA) -- a single MSE number
+    from one sequence is a point estimate, not evidence of a working model.
+    """
+    sequences = _generate_synthetic_vad_trajectories(n_sequences=n_sequences, seq_len=seq_len, random_state=random_state)
+    forecaster_mses, sma_mses = [], []
+    wins = 0
+
+    for seq in sequences:
+        data = np.array(seq, dtype=np.float32)
+        inputs, target = data[:-1], data[-1]
+        pred = forecaster.predict(inputs)
+        sma_pred = data[-4:-1].mean(axis=0)
+        f_mse = float(np.mean((pred - target) ** 2))
+        s_mse = float(np.mean((sma_pred - target) ** 2))
+        forecaster_mses.append(f_mse)
+        sma_mses.append(s_mse)
+        if f_mse < s_mse:
+            wins += 1
+
+    f_mean, f_std = float(np.mean(forecaster_mses)), float(np.std(forecaster_mses))
+    s_mean, s_std = float(np.mean(sma_mses)), float(np.std(sma_mses))
+    win_rate = wins / n_sequences
+
+    if verbose:
+        print(f"Held-out sequences: n={n_sequences} (random_state={random_state}, distinct from training seed 42)")
+        print(f"Forecaster MSE: {f_mean:.4f} +/- {f_std:.4f}")
+        print(f"SMA MSE:        {s_mean:.4f} +/- {s_std:.4f}")
+        print(f"Forecaster beat SMA on {wins}/{n_sequences} sequences ({win_rate:.0%})")
+        if win_rate < 0.5:
+            print("WARNING: the forecaster beats the baseline on FEWER than half the held-out")
+            print("sequences. Report this plainly. Do not present this as a successful")
+            print("forecasting model -- reframe it as experimental/prototype instead.")
+        elif win_rate < 0.65:
+            print("NOTE: the forecaster beats the baseline on a majority but not a strong")
+            print("majority of sequences. Report the win rate alongside the mean MSE --")
+            print("don't lead with the mean alone, it understates the variance.")
+
+    return {
+        "forecaster_mses": forecaster_mses, "sma_mses": sma_mses,
+        "forecaster_mean": f_mean, "forecaster_std": f_std,
+        "sma_mean": s_mean, "sma_std": s_std,
+        "win_rate": win_rate, "n": n_sequences,
+    }
 
 
 # ==============================================================================
@@ -1285,6 +1341,7 @@ class GenerativeArtImageModel:
         self.net = _ImageCVAENet()
         self.mapper = EmotionalMapper()
         self.n_synthetic_samples = n_synthetic_samples
+        self.n_real_examples = 0
         self._X, self._C = self._build_synthetic_dataset(n_synthetic_samples, random_state)
         self._train(epochs, lr, verbose=False)
 
@@ -1336,6 +1393,15 @@ class GenerativeArtImageModel:
             "X": self._X, "C": self._C,
             "n_synthetic_samples": self.n_synthetic_samples,
             "n_real_examples": getattr(self, "n_real_examples", 0),
+        }
+
+    def data_summary(self):
+        total = self._X.shape[0]
+        return {
+            "synthetic_examples": self.n_synthetic_samples,
+            "real_examples": self.n_real_examples,
+            "total_training_examples": total,
+            "fraction_real": self.n_real_examples / max(1, total),
         }
 
     def load_state(self, state):
@@ -1963,11 +2029,297 @@ def run_streamlit_app():
 # ==============================================================================
 # SECTION P — EXECUTION ENTRY POINT
 # ==============================================================================
+# ==============================================================================
+# SECTION Q -- EVALUATION SUITE (restored): expected-vs-produced, consistency,
+# discriminability. Ported from an earlier iteration of this notebook. Real
+# numbers, including unflattering ones, are reported as-is -- nothing here is
+# tuned to look good.
+# ==============================================================================
+LABELED_TEST_SET = [
+    {"text": "Back-to-back calls all afternoon, I can't switch my brain off.", "expected_category": "stress"},
+    {"text": "I slammed the laptop shut, so sick of being interrupted.", "expected_category": "anger"},
+    {"text": "Slow Sunday, made tea, nowhere I need to be.", "expected_category": "calm"},
+    {"text": "Everything finally makes sense, I can see the whole plan now.", "expected_category": "clarity"},
+    {"text": "Got through my whole list today, sharp and on top of it.", "expected_category": "focus"},
+    {"text": "Missing people I haven't seen in years, feeling low.", "expected_category": "sad"},
+    {"text": "Not sure what I'm even feeling, everything's a bit blurry.", "expected_category": "fog"},
+    {"text": "Every task feels like wading through mud today.", "expected_category": "heavy"},
+    {"text": "Things are finally starting to look up a little.", "expected_category": "hope"},
+    {"text": "Had the best evening, laughing with old friends.", "expected_category": "joy"},
+    {"text": "Sat in the garden this morning, everything felt golden.", "expected_category": "light"},
+]
+
+
+def evaluate_classifier(clf, test_set=None):
+    """Runs the labeled test set through the classifier, returns per-item
+    results and overall accuracy. Prints nothing -- caller decides how to
+    display it."""
+    test_set = test_set or LABELED_TEST_SET
+    results = []
+    correct = 0
+    for item in test_set:
+        result = clf.analyze(item["text"])
+        is_correct = result["top_category"] == item["expected_category"]
+        correct += is_correct
+        results.append({
+            "text": item["text"],
+            "expected": item["expected_category"],
+            "predicted": result["top_category"],
+            "correct": is_correct,
+            "valence": result["valence"],
+            "arousal": result["arousal"],
+        })
+    accuracy = correct / len(test_set)
+    return {"results": results, "accuracy": accuracy, "n": len(test_set), "n_correct": correct}
+
+
+CONSISTENCY_GROUPS = {
+    "stress": [
+        "So much on my plate right now, I feel completely overwhelmed.",
+        "Deadlines everywhere, I can't keep up, it's too much.",
+        "My chest is tight and my mind won't stop racing today.",
+    ],
+    "calm": [
+        "Everything feels quiet and settled this morning.",
+        "A peaceful, unhurried kind of day, nothing pressing.",
+        "I feel grounded and at ease right now.",
+    ],
+    "joy": [
+        "Genuinely such a happy day, I feel light and grateful.",
+        "Had a wonderful time, feeling really good about everything.",
+        "Everything felt easy and joyful today.",
+    ],
+}
+
+
+def evaluate_consistency(clf, groups=None):
+    """For each group, computes the VAD spread (std dev across the group's
+    members) -- lower means more consistent. Also computes the average
+    pairwise VAD distance BETWEEN groups, for contrast -- should be larger
+    than the within-group spread if the model is behaving sensibly."""
+    groups = groups or CONSISTENCY_GROUPS
+    group_vads = {}
+    for label, texts in groups.items():
+        vads = []
+        for t in texts:
+            r = clf.analyze(t)
+            vads.append([r["valence"], r["arousal"], r["dominance"]])
+        group_vads[label] = np.array(vads)
+
+    within_group_std = {label: float(np.mean(np.std(vads, axis=0))) for label, vads in group_vads.items()}
+
+    centroids = {label: vads.mean(axis=0) for label, vads in group_vads.items()}
+    between_group_dists = []
+    for a, b in itertools.combinations(centroids.keys(), 2):
+        d = float(np.linalg.norm(centroids[a] - centroids[b]))
+        between_group_dists.append({"pair": (a, b), "distance": d})
+
+    return {
+        "within_group_std": within_group_std,
+        "between_group_distances": between_group_dists,
+        "mean_within_group_std": float(np.mean(list(within_group_std.values()))),
+        "mean_between_group_distance": float(np.mean([d["distance"] for d in between_group_dists])),
+    }
+
+
+DISCRIMINABILITY_MOODS = {
+    "stress": "Overwhelmed and anxious, too much happening at once.",
+    "calm": "Quiet, settled, nothing urgent, just resting.",
+    "joy": "Genuinely happy and grateful, a really good day.",
+    "sad": "Low and a bit empty, missing people I care about.",
+}
+
+
+def evaluate_discriminability(clf, art_model, moods=None):
+    """For each mood, produces a palette and measures pairwise RGB distance
+    between palettes for different moods. Reports actual distances so a
+    reader can judge for themselves, rather than taking a bare claim on
+    faith."""
+    moods = moods or DISCRIMINABILITY_MOODS
+    palettes = {}
+    for label, text in moods.items():
+        r = clf.analyze(text)
+        energy01 = (r["arousal"] + 1) / 2
+        palette_hex = art_model.predict_palette(r["valence"], energy01, r["clarity"], r["turbulence"], r["posterior"])
+        palettes[label] = _hex_list_to_rgb_array(palette_hex)
+
+    distances = []
+    for a, b in itertools.combinations(palettes.keys(), 2):
+        d = float(np.mean(np.linalg.norm(palettes[a] - palettes[b], axis=1)))
+        distances.append({"pair": (a, b), "rgb_distance_0_255": d})
+
+    return {
+        "palettes": {k: _rgb_array_to_hex_list(v) for k, v in palettes.items()},
+        "pairwise_distances": distances,
+        "mean_pairwise_distance": float(np.mean([d["rgb_distance_0_255"] for d in distances])),
+    }
+
+
+def _hex_list_to_rgb_array(hex_list):
+    out = []
+    for h in hex_list:
+        h = h.lstrip("#")
+        out.append([int(h[i:i + 2], 16) for i in (0, 2, 4)])
+    return np.array(out, dtype=float)
+
+
+def _rgb_array_to_hex_list(arr):
+    return ["#{:02x}{:02x}{:02x}".format(*np.clip(row, 0, 255).astype(int)) for row in arr]
+
+
+def print_full_report(clf, art_model):
+    print("=" * 70)
+    print("1. CLASSIFIER: expected vs produced (labeled test set, n={})".format(len(LABELED_TEST_SET)))
+    print("=" * 70)
+    report = evaluate_classifier(clf)
+    for r in report["results"]:
+        mark = "v" if r["correct"] else "x"
+        print(f"  {mark} expected={r['expected']:8s} predicted={r['predicted']:8s} "
+              f"valence={r['valence']:+.2f}  | {r['text'][:50]}")
+    print(f"\nAccuracy: {report['n_correct']}/{report['n']} = {report['accuracy']:.0%}")
+    print("(Report the number as-is, whatever it is.)")
+
+    print("\n" + "=" * 70)
+    print("2. CONSISTENCY: similar inputs -> similar outputs?")
+    print("=" * 70)
+    cons = evaluate_consistency(clf)
+    for label, std in cons["within_group_std"].items():
+        print(f"  {label:8s} within-group VAD std: {std:.3f}  (lower = more consistent)")
+    print(f"  mean within-group std:    {cons['mean_within_group_std']:.3f}")
+    print(f"  mean between-group dist:  {cons['mean_between_group_distance']:.3f}")
+    if cons["mean_between_group_distance"] > cons["mean_within_group_std"]:
+        print("  -> between-group distance exceeds within-group spread: groups are separable.")
+    else:
+        print("  -> WARNING: within-group spread exceeds between-group distance -- groups are")
+        print("     not cleanly separable at this training set size. Report this, don't hide it.")
+
+    print("\n" + "=" * 70)
+    print("3. DISCRIMINABILITY: different moods -> different visuals?")
+    print("=" * 70)
+    disc = evaluate_discriminability(clf, art_model)
+    for label, hexlist in disc["palettes"].items():
+        print(f"  {label:8s} -> {hexlist}")
+    print()
+    for d in disc["pairwise_distances"]:
+        print(f"  {d['pair'][0]:8s} vs {d['pair'][1]:8s}: RGB distance = {d['rgb_distance_0_255']:.1f} / ~441 max")
+    print(f"  mean pairwise distance: {disc['mean_pairwise_distance']:.1f}")
+
+    return {"classifier": report, "consistency": cons, "discriminability": disc}
+
+
+# ==============================================================================
+# SECTION Q2 -- ADDITIONAL RESTORED DEMOS: rule vs regression vs CVAE
+# variation, image-style discriminability, archive clustering + forecaster
+# on real (demo) history. Ported from an earlier notebook iteration.
+# ==============================================================================
+def demo_rule_vs_regression_vs_cvae(art_model, cvae_model):
+    """Same mood, three generation methods. Shows the CVAE produces genuine
+    sample-to-sample variation (stochastic z) for a FIXED input, unlike the
+    deterministic rule and the regression approximation. Real captured hex
+    codes -- this is a different question from VAD-conditioning sensitivity
+    (see visualize_cvae_latent_interpolation): this tests within-mood
+    diversity, not between-mood distinctiveness."""
+    mood = dict(valence=-0.5, energy01=0.85, clarity=0.3, turbulence=0.7, theme_scores={"stress": 1.1})
+    rule_output = deterministic_palette(**mood)
+    rule_hex = ["#{:02x}{:02x}{:02x}".format(*(np.clip(s, 0, 1) * 255).astype(int)) for s in rule_output.reshape(4, 3)]
+    regression_output = art_model.predict_palette(**mood)
+    mood_vad = {"valence": -0.5, "arousal": 0.7, "dominance": -0.3, "clarity": 0.3, "turbulence": 0.7}
+    cvae_samples = cvae_model.sample(mood_vad, n_samples=3)
+
+    print("Curated rule (ground truth):     ", rule_hex)
+    print("Regression approximation:        ", regression_output)
+    print("CVAE samples (3, same mood):")
+    for s in cvae_samples:
+        print("  ", s)
+
+    fig, axes = plt.subplots(1, 5, figsize=(11, 1.6))
+    titles = ["Rule", "Regression"] + [f"CVAE {i+1}" for i in range(3)]
+    for ax, palette, title in zip(axes, [rule_hex, regression_output] + cvae_samples, titles):
+        for i, c in enumerate(palette):
+            ax.add_patch(plt.Rectangle((i, 0), 1, 1, color=c))
+        ax.set_xlim(0, 4); ax.set_ylim(0, 1); ax.set_xticks([]); ax.set_yticks([]); ax.set_title(title, fontsize=9)
+    plt.suptitle("Same mood: the rule, its regression approximation, and 3 CVAE samples", fontsize=10)
+    plt.tight_layout()
+    plt.show()
+
+
+def demo_image_style_discriminability(img_model):
+    """Same mood, all 6 styles -- tests whether the pixel CVAE differentiates
+    by style, not just by recolouring the same shape. Real pairwise mean
+    pixel differences, plus a real fine_tune() before/after data_summary()
+    comparison."""
+    stress_mood = {"valence": -0.5, "arousal": 0.8, "dominance": -0.2, "clarity": 0.3, "turbulence": 0.7}
+
+    fig, axes = plt.subplots(1, 6, figsize=(15, 2.6))
+    imgs_by_style = {}
+    for ax, style in zip(axes, STYLE_NAMES):
+        img = img_model.sample(stress_mood, style=style, n_samples=1)[0]
+        imgs_by_style[style] = np.array(img).astype(float)
+        ax.imshow(img); ax.axis('off'); ax.set_title(style, fontsize=9)
+    plt.suptitle("Same mood, all 6 AI-generated styles", fontsize=10)
+    plt.tight_layout(); plt.show()
+
+    print("Pairwise mean pixel difference across styles (0 = identical):")
+    for i, a in enumerate(STYLE_NAMES):
+        for b in STYLE_NAMES[i + 1:]:
+            diff = np.abs(imgs_by_style[a] - imgs_by_style[b]).mean()
+            print(f"  {a:8s} vs {b:8s}: {diff:.1f}")
+
+    print("\n--- fine_tune() demonstration ---")
+    kept_pil = img_model.sample(stress_mood, style="prism", n_samples=1)[0]
+    print("Before:", img_model.data_summary())
+    img_model.fine_tune(stress_mood, kept_pil, style="prism", steps=25)
+    print("After: ", img_model.data_summary())
+
+
+def demo_archive_clustering_and_forecast(clf, forecaster):
+    """K-Means clustering on demo diary entries, plus the TRAINED
+    MoodTemporalForecaster's prediction from that same short real-feeling
+    history. Demonstrated on labeled demo text since this notebook has no
+    real user history to draw on -- illustrative only, NOT the forecaster
+    benchmark (see evaluate_forecaster_multi_sequence for that)."""
+    demo_texts = [
+        "Overwhelmed again, meetings all day, chest tight.",
+        "Quiet Sunday, tea, feeling settled and calm.",
+        "Furious about the deadline change, everyone frustrated.",
+        "Clear-headed today, focused and got a lot done.",
+        "Slowly feeling more hopeful, things are lifting.",
+    ]
+    demo_entries = [clf.analyze(t) for t in demo_texts]
+
+    archive = ArchiveClustering(n_clusters=3)
+    assignments = archive.fit(demo_entries)
+    for text, a in zip(demo_texts, assignments):
+        print(f"[cluster {a} -- {archive.cluster_labels[a]}] {text}")
+
+    history_vad = [[e["valence"], e["arousal"], e["dominance"]] for e in demo_entries]
+    pred = forecaster.predict(history_vad)
+    print(f"\nMoodTemporalForecaster prediction from this 5-entry demo history: "
+          f"valence={pred[0]:+.2f}, arousal={pred[1]:+.2f}, dominance={pred[2]:+.2f}")
+    print("(Demo data, illustrative only -- NOT the forecaster benchmark.)")
+
+
 def run_full_pipeline_evaluation():
     """Runs LSTM baseline comparison, Latent Interpolation, and Systematic Ablation Suite."""
     print("=" * 70)
     print("RUNNING COMPREHENSIVE ML PIPELINE EVALUATION")
     print("=" * 70)
+
+    print("\n--- 0. EVALUATION SUITE: expected-vs-produced, consistency, discriminability ---")
+    _eval_clf = DiaryMoodClassifier()
+    _eval_art_model = ArtColorModel()
+    print_full_report(_eval_clf, _eval_art_model)
+
+    print("\n--- 0b. Same mood: rule vs regression vs CVAE variation ---")
+    _eval_cvae = CVAEArtModel(epochs=200)
+    demo_rule_vs_regression_vs_cvae(_eval_art_model, _eval_cvae)
+
+    print("\n--- 0c. Image-style discriminability (pixel CVAE, all 6 styles) ---")
+    _eval_img_model = GenerativeArtImageModel(n_synthetic_samples=480, epochs=70)
+    demo_image_style_discriminability(_eval_img_model)
+
+    print("\n--- 0d. Archive clustering + forecaster on demo history ---")
+    demo_archive_clustering_and_forecast(_eval_clf, _get_forecaster())
 
     # 1. Mock Multi-Day VAD History
     mock_vad_history = [
@@ -1979,11 +2331,14 @@ def run_full_pipeline_evaluation():
     test_text = "Back-to-back deadlines have my chest tight, but I am trying to stay grounded."
 
     # 2. LSTM Sequence vs. Moving Average Baseline
-    print("\n--- 1. TRAINED FORECASTER VS MOVING AVERAGE BASELINE ---")
+    print("\n--- 1a. Forecaster vs SMA -- single illustrative sequence ---")
     forecaster = _get_forecaster()
     print(f"Forecaster train loss (final): {forecaster.train_losses[-1]:.4f} | "
           f"val loss (final): {forecaster.val_losses[-1]:.4f}")
     evaluate_forecaster_vs_baseline(forecaster, mock_vad_history, verbose=True)
+
+    print("\n--- 1b. Forecaster vs SMA -- REAL BENCHMARK, 40 held-out sequences ---")
+    evaluate_forecaster_multi_sequence(forecaster, n_sequences=40, verbose=True)
 
     # 3. Unified Dependency Pipeline Test
     print("\n--- 2. UNIFIED PIPELINE (Text -> Topic -> VAD -> Forecaster -> CVAE) ---")
