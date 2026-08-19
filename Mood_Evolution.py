@@ -1,3 +1,4 @@
+
 import os
 import json
 import sqlite3
@@ -334,6 +335,41 @@ def _random_theme_scores(rng):
     return scores
 
 
+def _theme_scores_from_posterior(posterior, rng, noise=0.15):
+    """
+    Builds theme_scores CORRELATED with the same posterior used to derive
+    the VAD condition -- unlike _random_theme_scores(), which draws an
+    independent random dominant category.
+
+    Bug this fixes: deterministic_palette()'s biggest source of colour
+    variety is its theme-driven hue selection (anger=red, calm=blue-violet,
+    joy/hope=pink, sad=blue, etc.) -- the continuous VAD-driven adjustments
+    (hue += valence*12, small saturation/lightness shifts) are comparatively
+    tiny. CVAEArtModel and GenerativeArtImageModel were trained with
+    _random_theme_scores() drawing an INDEPENDENT theme for every synthetic
+    sample, uncorrelated with the VAD condition built from that sample's
+    posterior. Since the biggest driver of the target palette was invisible
+    to (uncorrelated with) the conditioning input, the MSE-optimal thing to
+    learn was the average palette across all independently-drawn themes for
+    a given VAD -- a near-constant, muted blend. This is why real diary
+    entries with very different classified moods produced visually
+    near-identical palettes in the deployed app: the model was trained to
+    ignore exactly the signal that would have let it differentiate them.
+
+    This ties theme to VAD the way a real diary entry's classifier posterior
+    actually would, using the same posterior already computed for the VAD
+    condition in the calling code -- so condition and target are correlated
+    the way they are at real inference time.
+    """
+    top_category = max(posterior, key=posterior.get)
+    scores = {c: 0.0 for c in CATEGORIES}
+    scores[top_category] = float(np.clip(posterior[top_category] * 3.0 + rng.uniform(-noise, noise), 0.3, 1.4))
+    for cat, p in posterior.items():
+        if cat != top_category and p > 0.15:
+            scores[cat] = float(np.clip(p * 2.0 + rng.uniform(0, noise), 0.05, 0.6))
+    return scores
+
+
 class ArtColorModel:
     def __init__(self, n_synthetic_samples=800, random_state=42):
         rng = np.random.default_rng(random_state)
@@ -498,7 +534,7 @@ class CVAEArtModel:
             mapped = self.mapper.map(posterior)
             cond = [mapped["valence"], mapped["arousal"], mapped["dominance"], mapped["clarity"], mapped["turbulence"]]
 
-            theme_scores = _random_theme_scores(rng)
+            theme_scores = _theme_scores_from_posterior(posterior, rng)  # was _random_theme_scores(rng) -- see docstring
             energy01 = (mapped["arousal"] + 1) / 2
             target = deterministic_palette(mapped["valence"], energy01, mapped["clarity"], mapped["turbulence"], theme_scores)
 
@@ -1357,7 +1393,7 @@ class GenerativeArtImageModel:
             vad = [mapped["valence"], mapped["arousal"], mapped["dominance"], mapped["clarity"], mapped["turbulence"]]
             cond = vad + _style_onehot(style)
 
-            theme_scores = _random_theme_scores(rng)
+            theme_scores = _theme_scores_from_posterior(posterior, rng)  # was _random_theme_scores(rng) -- see docstring
             energy01 = (mapped["arousal"] + 1) / 2
             palette_raw = deterministic_palette(mapped["valence"], energy01, mapped["clarity"], mapped["turbulence"], theme_scores)
             palette_hex = ["#{:02x}{:02x}{:02x}".format(*(np.clip(s, 0, 1) * 255).astype(int)) for s in palette_raw.reshape(4, 3)]
