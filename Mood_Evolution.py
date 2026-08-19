@@ -1,3 +1,4 @@
+
 import os
 import json
 import sqlite3
@@ -509,14 +510,33 @@ class CVAEArtModel:
     def _train(self, epochs, lr, verbose=True):
         opt = torch.optim.Adam(self.net.parameters(), lr=lr)
         self.net.train()
+
+        # Loss BEFORE this training pass touches anything — needed so a
+        # periodic retrain can actually report "here is what real user
+        # corrections changed," not just "training ran."
+        with torch.no_grad():
+            recon0, mu0, logvar0 = self.net(self._X, self._C)
+            loss_before, _, _ = _cvae_loss(recon0, self._X, mu0, logvar0)
+        loss_before = loss_before.item()
+
+        last_loss = loss_before
         for epoch in range(epochs):
             opt.zero_grad()
             recon, mu, logvar = self.net(self._X, self._C)
             loss, recon_l, kl_l = _cvae_loss(recon, self._X, mu, logvar)
             loss.backward()
             opt.step()
+            last_loss = loss.item()
 
-    def maybe_periodic_retrain(self, every=10, epochs=60, lr=1e-3):
+        if verbose:
+            n_examples = self._X.shape[0]
+            print(f"CVAEArtModel._train: {epochs} epochs over {n_examples} examples "
+                  f"({self.n_real_corrections} real corrections included) | "
+                  f"loss before: {loss_before:.4f} -> after: {last_loss:.4f}")
+
+        return loss_before, last_loss
+
+    def maybe_periodic_retrain(self, every=10, epochs=60, lr=1e-3, verbose=True):
         """
         fine_tune() only nudges the net with 30 Adam steps on a single new
         example, and never revisits earlier real corrections together — the
@@ -526,12 +546,12 @@ class CVAEArtModel:
         correction so far), the same way _train() is used in __init__, so
         real corrections actually reinforce each other instead of each being
         a small, easily-overwritten nudge in isolation.
-        Returns True if a periodic retrain ran, False otherwise.
+        Returns (ran: bool, loss_before: float|None, loss_after: float|None).
         """
         if self.n_real_corrections > 0 and self.n_real_corrections % every == 0:
-            self._train(epochs, lr, verbose=False)
-            return True
-        return False
+            loss_before, loss_after = self._train(epochs, lr, verbose=verbose)
+            return True, loss_before, loss_after
+        return False, None, None
 
     def get_state(self):
         return {
@@ -1824,8 +1844,10 @@ def run_streamlit_app():
                             clf.learn(text, category)
                             save_diary_classifier(user_id, clf)
                     cvae_model.fine_tune(r["target_vad"], active_palette, steps=30)
-                    if cvae_model.maybe_periodic_retrain():
-                        st.toast(f"Periodic retrain: {cvae_model.n_real_corrections} real corrections folded in together.")
+                    ran, loss_before, loss_after = cvae_model.maybe_periodic_retrain()
+                    if ran:
+                        st.toast(f"Periodic retrain: {cvae_model.n_real_corrections} real corrections folded in "
+                                 f"together. Loss {loss_before:.4f} -> {loss_after:.4f}.")
                     save_cvae_model(user_id, cvae_model)
 
                 if art_mode.startswith("AI-generated"):
@@ -1886,11 +1908,12 @@ def run_streamlit_app():
                                 if correction_choice == "Custom colour":
                                     # Same as a Today-tab "custom" override: Tier 2 (CVAE) only.
                                     cvae_model.fine_tune(entry_vad, corrected_palette, steps=30)
-                                    retrained = cvae_model.maybe_periodic_retrain()
+                                    ran, loss_before, loss_after = cvae_model.maybe_periodic_retrain()
                                     save_cvae_model(user_id, cvae_model)
                                     msg = "Tier 2 updated: CVAE fine-tuned on this correction."
-                                    if retrained:
-                                        msg += f" Periodic retrain also ran ({cvae_model.n_real_corrections} real corrections so far)."
+                                    if ran:
+                                        msg += (f" Periodic retrain also ran ({cvae_model.n_real_corrections} real "
+                                                f"corrections so far). Loss {loss_before:.4f} -> {loss_after:.4f}.")
                                     st.success(msg)
                                 else:
                                     # Same as a Today-tab "preset" override: Tier 1 + Tier 2.
@@ -1901,11 +1924,12 @@ def run_streamlit_app():
                                         clf.learn(entry["text"], category)
                                         save_diary_classifier(user_id, clf)
                                     cvae_model.fine_tune(entry_vad, preset_hex, steps=30)
-                                    retrained = cvae_model.maybe_periodic_retrain()
+                                    ran, loss_before, loss_after = cvae_model.maybe_periodic_retrain()
                                     save_cvae_model(user_id, cvae_model)
                                     msg = "Tier 1 + Tier 2 updated: classifier and CVAE both retrained on this correction."
-                                    if retrained:
-                                        msg += f" Periodic retrain also ran ({cvae_model.n_real_corrections} real corrections so far)."
+                                    if ran:
+                                        msg += (f" Periodic retrain also ran ({cvae_model.n_real_corrections} real "
+                                                f"corrections so far). Loss {loss_before:.4f} -> {loss_after:.4f}.")
                                     st.success(msg)
                 st.divider()
 
