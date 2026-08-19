@@ -42,6 +42,17 @@ CATEGORY_ANCHORS_VAD = {
     "hope":    ( 0.60,  0.40,  0.20),
     "joy":     ( 0.78,  0.60,  0.50),
     "light":   ( 0.63,  0.35,  0.30),
+    # Added: fear placed per Warriner et al. VAD lexicon norms -- low
+    # dominance is what distinguishes it from anger (high dominance) at a
+    # similar valence/arousal. surprise/disgust complete Ekman's six basic
+    # emotions (anger/joy/sad already present). guilt/pride/boredom are
+    # common journaling emotions not covered by the original 11.
+    "fear":     (-0.64,  0.62, -0.43),
+    "surprise": ( 0.20,  0.80,  0.10),
+    "disgust":  (-0.60,  0.35,  0.15),
+    "guilt":    (-0.55,  0.10, -0.40),
+    "pride":    ( 0.65,  0.45,  0.60),
+    "boredom":  (-0.35, -0.65, -0.10),
 }
 
 CATEGORIES = list(CATEGORY_ANCHORS_VAD.keys())
@@ -113,6 +124,42 @@ SEED_EXAMPLES = {
         "Soft warm light, everything feels touched by gold.",
         "Everything glowed a little today, warm and bright.",
     ],
+    "fear": [
+        "My hands were shaking, I couldn't stop imagining the worst.",
+        "A cold dread settled in before the results came back.",
+        "I feel unsafe, like something bad is about to happen.",
+        "Frozen with worry, I couldn't make myself move.",
+    ],
+    "surprise": [
+        "I did not see that coming at all, my jaw actually dropped.",
+        "Totally caught off guard by the news, I'm still stunned.",
+        "What a shock, I never expected that today.",
+        "Blindsided in the best way, I'm still processing it.",
+    ],
+    "disgust": [
+        "That was revolting, I can't get the image out of my head.",
+        "Repulsed by what I saw, I had to look away.",
+        "Something about it just made my skin crawl.",
+        "I feel sick just thinking about what happened.",
+    ],
+    "guilt": [
+        "I keep replaying what I said, I feel awful about it.",
+        "I should have been there, I let them down.",
+        "Can't shake the feeling that this is my fault.",
+        "Ashamed of how I handled that conversation.",
+    ],
+    "pride": [
+        "I can't stop smiling, I actually pulled it off.",
+        "Proud of how far I've come this year.",
+        "Stood up for myself today and it felt powerful.",
+        "Finished what I started, and it feels earned.",
+    ],
+    "boredom": [
+        "Nothing happening today, just watching the clock.",
+        "Dull and uneventful, I can't focus on anything.",
+        "Restless but too flat to do anything about it.",
+        "Same routine again, nothing to look forward to.",
+    ],
 }
 
 _READING_MAP = {
@@ -121,6 +168,9 @@ _READING_MAP = {
     "focus": "Gathered, deliberate, gilded", "sad": "A slow, low tide",
     "fog": "Soft uncertainty, half-lit", "heavy": "Weight, slowly loosening",
     "hope": "Something becoming", "joy": "Open and luminous", "light": "Warmth breaking through",
+    "fear": "A tightening, watchful edge", "surprise": "The floor tilting, bright and sudden",
+    "disgust": "A recoil, pulling away", "guilt": "A weight carried quietly",
+    "pride": "Standing taller, quietly certain", "boredom": "Flat hours, waiting for something",
 }
 
 
@@ -213,6 +263,18 @@ def deterministic_palette(valence, energy01, clarity, turbulence, theme_scores):
         hue, accent_hue, sat = 265, 300, 0.4
     elif T.get("hope", 0) > 0.3 or T.get("joy", 0) > 0.3:
         hue, accent_hue, sat = 330, 45, 0.6
+    elif T.get("fear", 0) > 0.4:
+        hue, accent_hue, sat = 300, 260, 0.55
+    elif T.get("surprise", 0) > 0.4:
+        hue, accent_hue, sat = 190, 45, 0.6
+    elif T.get("disgust", 0) > 0.4:
+        hue, accent_hue, sat = 95, 40, 0.5
+    elif T.get("guilt", 0) > 0.4:
+        hue, accent_hue, sat = 15, 350, 0.35
+    elif T.get("pride", 0) > 0.4:
+        hue, accent_hue, sat = 20, 45, 0.6
+    elif T.get("boredom", 0) > 0.4:
+        hue, accent_hue, sat = 200, 220, 0.18
     else:
         hue, accent_hue, sat = 270, 320, 0.45
 
@@ -270,6 +332,12 @@ CATEGORY_CORRECTION_DEFS = {
     "hope":    dict(label="Warmth",  theme_scores={"hope": 0.8, "joy": 0.4},       valence=0.7,   energy01=0.5,   clarity=0.6,  turbulence=0.15),
     "joy":     dict(label="Joy",     theme_scores={"joy": 0.9, "hope": 0.2},       valence=0.78,  energy01=0.8,   clarity=0.6,  turbulence=0.1),
     "light":   dict(label="Light",   theme_scores={"light": 0.7, "clarity": 0.2},  valence=0.63,  energy01=0.675, clarity=0.75, turbulence=0.05),
+    "fear":     dict(label="Fear",     theme_scores={"fear": 0.9},     valence=-0.64, energy01=0.81,  clarity=0.25, turbulence=0.75),
+    "surprise": dict(label="Surprise", theme_scores={"surprise": 0.8}, valence=0.20,  energy01=0.90,  clarity=0.4,  turbulence=0.55),
+    "disgust":  dict(label="Disgust",  theme_scores={"disgust": 0.8},  valence=-0.60, energy01=0.675, clarity=0.35, turbulence=0.4),
+    "guilt":    dict(label="Guilt",    theme_scores={"guilt": 0.7},    valence=-0.55, energy01=0.55,  clarity=0.3,  turbulence=0.45),
+    "pride":    dict(label="Pride",    theme_scores={"pride": 0.8},    valence=0.65,  energy01=0.725, clarity=0.7,  turbulence=0.15),
+    "boredom":  dict(label="Boredom",  theme_scores={"boredom": 0.7},  valence=-0.35, energy01=0.175, clarity=0.3,  turbulence=0.15),
 }
 
 
