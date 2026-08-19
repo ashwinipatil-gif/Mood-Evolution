@@ -1,4 +1,5 @@
 
+
 import os
 import json
 import sqlite3
@@ -1526,7 +1527,8 @@ def _get_forecaster():
     return _FORECASTER_SINGLETON
 
 
-def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablations=None):
+def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablations=None,
+                          clf=None, cvae_model=None):
     """
     Executes end-to-end dependency chain:
     Text -> Classifier (Topic) -> Mapper (VAD) -> Forecaster (History) -> CVAE (Visual)
@@ -1539,11 +1541,23 @@ def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablatio
     deterministic_palette() function, optionally personalized via a
     lightweight fine_tune() on one user-chosen preset. It is not learning
     palette structure from real user preference data at scale.
+
+    IMPORTANT: pass in the caller's own `clf`/`cvae_model` (e.g. the
+    per-user objects loaded via load_diary_classifier/load_cvae_model) if
+    you want this function to use a personalized, corrected model. If left
+    as None, this falls back to a fresh seed-only classifier and the
+    process-wide singleton CVAE (via _get_cvae_model()) -- fine for the
+    diagnostic/evaluation harness in this file, which has no per-user state,
+    but WRONG for real per-user app usage: a caller that omits these will
+    silently ignore every correction and fine-tune that user has ever made.
+    This was previously the case unconditionally (Reflect never passed its
+    per-user objects in) -- fixed in this revision.
     """
     ablations = ablations or []
 
     # Step 1: Classification & Topic Extraction
-    clf = DiaryMoodClassifier()
+    if clf is None:
+        clf = DiaryMoodClassifier()
     res = clf.analyze(text)
     topic = res["top_category"]
 
@@ -1574,7 +1588,8 @@ def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablatio
         )
         render_engine = "Rule-based Fallback (No CVAE)"
     else:
-        cvae_model = _get_cvae_model()   # cached, not retrained per call
+        if cvae_model is None:
+            cvae_model = _get_cvae_model()   # cached, not retrained per call -- fallback only
         if "no_optimiser" not in ablations and user_preference_preset:
             pref_hex = preset_palette(user_preference_preset)
             cvae_model.fine_tune(target_vad, pref_hex, steps=15)
@@ -1816,7 +1831,10 @@ def run_streamlit_app():
             history = load_entry_history(user_id)
             history_vads = [[e["valence"], e["arousal"], e["dominance"]] for e in history if "valence" in e]
 
-            pipe_res = run_unified_pipeline(text, history_vads)
+            # Pass the per-user clf/cvae_model in -- without this, Reflect used a
+            # fresh seed-only classifier and the global singleton CVAE, silently
+            # ignoring every correction and fine-tune this user has ever made.
+            pipe_res = run_unified_pipeline(text, history_vads, clf=clf, cvae_model=cvae_model)
             result = pipe_res["analysis"]
 
             import re
