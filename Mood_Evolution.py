@@ -58,6 +58,13 @@ CATEGORY_ANCHORS_VAD = {
     # how the wording tries to distinguish it (anticipatory worry) from
     # stress (external pressure) and fear (acute threat).
     "anxiety":  (-0.58,  0.58, -0.38),
+    "love":       ( 0.85,  0.35,  0.35),
+    "gratitude":  ( 0.75,  0.25,  0.25),
+    "shame":      (-0.60,  0.15, -0.55),  # deliberately close to guilt -- see note below
+    "loneliness": (-0.60, -0.20, -0.45),
+    "excitement": ( 0.70,  0.85,  0.40),
+    "frustration":(-0.55,  0.65,  0.20),
+    "nostalgia":  ( 0.10, -0.10,  0.00),  # deliberately near-neutral: nostalgia is genuinely bittersweet
 }
 
 CATEGORIES = list(CATEGORY_ANCHORS_VAD.keys())
@@ -171,6 +178,48 @@ SEED_EXAMPLES = {
         "My mind won't stop running through worst-case scenarios.",
         "Something feels off and I can't shake this nervous, unsettled feeling.",
     ],
+    "love": [
+        "I feel so loved and connected, wrapped up in warmth for the people around me.",
+        "My heart feels full just thinking about them.",
+        "Overwhelmed with affection today, grateful for who I get to love.",
+        "A deep, quiet love for the people in my life today.",
+    ],
+    "gratitude": [
+        "So thankful for everything today, I keep noticing the good.",
+        "Counting my blessings, genuinely grateful for this life.",
+        "A quiet appreciation for the small things today.",
+        "Thank you doesn't feel like enough for how supported I feel.",
+    ],
+    "shame": [
+        "I can't believe I said that, I feel so exposed and small.",
+        "Wanted to disappear after what happened, deeply embarrassed.",
+        "A hot, sinking feeling thinking about how I acted.",
+        "I feel like everyone can see how badly I messed up.",
+    ],
+    "loneliness": [
+        "The apartment feels too big and too quiet tonight.",
+        "Surrounded by people but still feel completely alone.",
+        "Nobody to call, nobody checking in, just me again.",
+        "An empty, isolated feeling that won't go away.",
+    ],
+    "excitement": [
+        "I can barely sit still, I'm so pumped for tomorrow!",
+        "Buzzing with energy, counting down the hours.",
+        "Everything feels electric, I can't stop smiling and pacing.",
+        "So hyped right now, this is going to be amazing.",
+    ],
+    "frustration": [
+        "Same problem again, I am so sick of dealing with this.",
+        "Everything today felt like hitting a wall over and over.",
+        "Fed up and irritated, nothing is going smoothly.",
+        "I want to scream, this keeps happening and nothing changes.",
+    ],
+    "nostalgia": [
+        "Found an old photo today and got lost in memories for an hour.",
+        "That song came on and suddenly I was back there again.",
+        "Missing a time that's gone, bittersweet thinking about it.",
+        "Half-smiling, half-aching thinking about how things used to be.",
+    ],
 }
 
 _READING_MAP = {
@@ -183,6 +232,10 @@ _READING_MAP = {
     "disgust": "A recoil, pulling away", "guilt": "A weight carried quietly",
     "pride": "Standing taller, quietly certain", "boredom": "Flat hours, waiting for something",
     "anxiety": "A low hum, worry running just under everything",
+    "love": "Wrapped in warmth, held close", "gratitude": "A quiet counting of what's good",
+    "shame": "Wanting to disappear, exposed", "loneliness": "An empty room, echoing",
+    "excitement": "Sparking, barely still", "frustration": "Hitting the same wall again",
+    "nostalgia": "A faded photograph, half-smiling",
 }
 
 
@@ -289,6 +342,20 @@ def deterministic_palette(valence, energy01, clarity, turbulence, theme_scores):
         hue, accent_hue, sat = 200, 220, 0.18
     elif T.get("anxiety", 0) > 0.4:
         hue, accent_hue, sat = 235, 280, 0.5
+    elif T.get("love", 0) > 0.4:
+        hue, accent_hue, sat = 345, 40, 0.65
+    elif T.get("gratitude", 0) > 0.4:
+        hue, accent_hue, sat = 55, 330, 0.55
+    elif T.get("shame", 0) > 0.4:
+        hue, accent_hue, sat = 10, 350, 0.3  # intentionally close to guilt's hue -- see note above
+    elif T.get("loneliness", 0) > 0.4:
+        hue, accent_hue, sat = 210, 240, 0.35
+    elif T.get("excitement", 0) > 0.4:
+        hue, accent_hue, sat = 315, 45, 0.75
+    elif T.get("frustration", 0) > 0.4:
+        hue, accent_hue, sat = 0, 350, 0.7
+    elif T.get("nostalgia", 0) > 0.4:
+        hue, accent_hue, sat = 280, 200, 0.3  # low saturation -- faded, sepia-toned
     else:
         hue, accent_hue, sat = 270, 320, 0.45
 
@@ -353,6 +420,13 @@ CATEGORY_CORRECTION_DEFS = {
     "pride":    dict(label="Pride",    theme_scores={"pride": 0.8},    valence=0.65,  energy01=0.725, clarity=0.7,  turbulence=0.15),
     "boredom":  dict(label="Boredom",  theme_scores={"boredom": 0.7},  valence=-0.35, energy01=0.175, clarity=0.3,  turbulence=0.15),
     "anxiety":  dict(label="Anxiety",  theme_scores={"anxiety": 0.8},  valence=-0.58, energy01=0.79,  clarity=0.25, turbulence=0.65),
+    "love":        dict(label="Love",        theme_scores={"love": 0.8},        valence=0.85,  energy01=0.675, clarity=0.6,  turbulence=0.15),
+    "gratitude":   dict(label="Gratitude",   theme_scores={"gratitude": 0.8},   valence=0.75,  energy01=0.625, clarity=0.65, turbulence=0.1),
+    "shame":       dict(label="Shame",       theme_scores={"shame": 0.8},       valence=-0.60, energy01=0.575, clarity=0.25, turbulence=0.35),
+    "loneliness":  dict(label="Loneliness",  theme_scores={"loneliness": 0.8},  valence=-0.60, energy01=0.4,   clarity=0.3,  turbulence=0.25),
+    "excitement":  dict(label="Excitement",  theme_scores={"excitement": 0.8},  valence=0.70,  energy01=0.925, clarity=0.5,  turbulence=0.4),
+    "frustration": dict(label="Frustration", theme_scores={"frustration": 0.8}, valence=-0.55, energy01=0.825, clarity=0.3,  turbulence=0.7),
+    "nostalgia":   dict(label="Nostalgia",   theme_scores={"nostalgia": 0.8},   valence=0.10,  energy01=0.45,  clarity=0.45, turbulence=0.2),
 }
 
 
