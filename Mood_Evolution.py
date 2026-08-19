@@ -1,5 +1,4 @@
 
-
 import os
 import json
 import sqlite3
@@ -248,6 +247,34 @@ PRESET_TO_CATEGORY = {"calm": "calm", "clarity": "clarity", "warmth": "hope", "f
 
 def preset_palette(preset_key):
     d = PRESET_DEFS[preset_key]
+    return deterministic_palette_hex(d["valence"], d["energy01"], d["clarity"], d["turbulence"], d["theme_scores"])
+
+
+# PRESET_DEFS above only covers 6 of the 11 real classifier categories
+# (anger, focus, heavy, joy, light have no preset). That's fine for the
+# aesthetic "Palette" picker's curated 6 options, but it meant "Correct this
+# entry" could never record a correction to those 5 categories -- there was
+# no way to tell the classifier a day was actually "joy," only the adjacent
+# "hope" (via "Warmth"). This covers all 11 categories for correction UIs
+# specifically. PRESET_DEFS/PRESET_TO_CATEGORY/preset_palette() are
+# untouched and still used elsewhere (ablation study, diagnostic harness).
+CATEGORY_CORRECTION_DEFS = {
+    "stress":  dict(label="Stress",  theme_scores={"stress": 1.1, "anger": 0.3},   valence=-0.5,  energy01=0.85,  clarity=0.3,  turbulence=0.75),
+    "anger":   dict(label="Anger",   theme_scores={"anger": 0.9},                  valence=-0.7,  energy01=0.9,   clarity=0.3,  turbulence=0.85),
+    "calm":    dict(label="Calm",    theme_scores={"calm": 1.2},                   valence=0.6,   energy01=0.25,  clarity=0.5,  turbulence=0.05),
+    "clarity": dict(label="Clarity", theme_scores={"clarity": 1, "light": 0.6},    valence=0.6,   energy01=0.5,   clarity=0.85, turbulence=0.1),
+    "focus":   dict(label="Focus",   theme_scores={"focus": 0.7},                  valence=0.55,  energy01=0.7,   clarity=0.7,  turbulence=0.15),
+    "sad":     dict(label="Sorrow",  theme_scores={"sad": 0.9},                    valence=-0.6,  energy01=0.2,   clarity=0.35, turbulence=0.2),
+    "fog":     dict(label="Fog",     theme_scores={"fog": 0.8, "heavy": 0.3},      valence=-0.3,  energy01=0.3,   clarity=0.25, turbulence=0.3),
+    "heavy":   dict(label="Heavy",   theme_scores={"heavy": 0.7, "fog": 0.2},      valence=-0.45, energy01=0.35,  clarity=0.3,  turbulence=0.25),
+    "hope":    dict(label="Warmth",  theme_scores={"hope": 0.8, "joy": 0.4},       valence=0.7,   energy01=0.5,   clarity=0.6,  turbulence=0.15),
+    "joy":     dict(label="Joy",     theme_scores={"joy": 0.9, "hope": 0.2},       valence=0.78,  energy01=0.8,   clarity=0.6,  turbulence=0.1),
+    "light":   dict(label="Light",   theme_scores={"light": 0.7, "clarity": 0.2},  valence=0.63,  energy01=0.675, clarity=0.75, turbulence=0.05),
+}
+
+
+def category_correction_palette(category):
+    d = CATEGORY_CORRECTION_DEFS[category]
     return deterministic_palette_hex(d["valence"], d["energy01"], d["clarity"], d["turbulence"], d["theme_scores"])
 
 
@@ -1868,7 +1895,7 @@ def run_streamlit_app():
             st.markdown(f"*{result['reading']}*  —  **{result['top_category']}**  |  `{r['engine']}`")
 
             override_choice = st.selectbox(
-                "Palette", ["Auto (detected)"] + [PRESET_DEFS[k]["label"] for k in PRESET_DEFS] + ["Custom colour"],
+                "Palette", ["Auto (detected)"] + [CATEGORY_CORRECTION_DEFS[c]["label"] for c in CATEGORIES] + ["Custom colour"],
                 key="palette_choice",
             )
             active_palette = r["cvae_palette"]
@@ -1882,9 +1909,11 @@ def run_streamlit_app():
                     active_palette = [c0, c1, c2, c3]
                     override_for_training = ("custom", active_palette)
                 else:
-                    key = [k for k, v in PRESET_DEFS.items() if v["label"] == override_choice][0]
-                    active_palette = preset_palette(key)
-                    override_for_training = ("preset", key)
+                    # value is now the category itself, not a preset key --
+                    # covers all 11 real categories, not just the 6 presets.
+                    category = [c for c in CATEGORIES if CATEGORY_CORRECTION_DEFS[c]["label"] == override_choice][0]
+                    active_palette = category_correction_palette(category)
+                    override_for_training = ("preset", category)
 
             swatch_cols = st.columns(4)
             for i, hexcolor in enumerate(active_palette):
@@ -1938,7 +1967,7 @@ def run_streamlit_app():
                 if override_for_training:
                     kind_check, value_check = override_for_training
                     if kind_check == "preset":
-                        corrected_category = PRESET_TO_CATEGORY.get(value_check)
+                        corrected_category = value_check  # already a category name now
 
                 entry = {
                     "date": dt.date.today().isoformat(),
@@ -1959,10 +1988,8 @@ def run_streamlit_app():
                 if override_for_training:
                     kind, value = override_for_training
                     if kind == "preset":
-                        category = PRESET_TO_CATEGORY.get(value)
-                        if category:
-                            clf.learn(text, category)
-                            save_diary_classifier(user_id, clf)
+                        clf.learn(text, value)  # value is the category name directly now
+                        save_diary_classifier(user_id, clf)
                     cvae_model.fine_tune(r["target_vad"], active_palette, steps=30)
                     ran, loss_before, loss_after = cvae_model.maybe_periodic_retrain()
                     if ran:
@@ -2005,7 +2032,7 @@ def run_streamlit_app():
                     with st.expander("Correct this entry"):
                         correction_choice = st.selectbox(
                             "What should this day have been?",
-                            ["No change"] + [PRESET_DEFS[k]["label"] for k in PRESET_DEFS] + ["Custom colour"],
+                            ["No change"] + [CATEGORY_CORRECTION_DEFS[c]["label"] for c in CATEGORIES] + ["Custom colour"],
                             key=f"archive_correction_{idx}",
                         )
                         corrected_palette = None
@@ -2037,13 +2064,12 @@ def run_streamlit_app():
                                     st.success(msg)
                                 else:
                                     # Same as a Today-tab "preset" override: Tier 1 + Tier 2.
-                                    preset_key = [k for k, v in PRESET_DEFS.items() if v["label"] == correction_choice][0]
-                                    category = PRESET_TO_CATEGORY.get(preset_key)
-                                    preset_hex = preset_palette(preset_key)
-                                    if category:
-                                        clf.learn(entry["text"], category)
-                                        save_diary_classifier(user_id, clf)
-                                    cvae_model.fine_tune(entry_vad, preset_hex, steps=30)
+                                    # Covers all 11 real categories now, not just the 6 palette presets.
+                                    category = [c for c in CATEGORIES if CATEGORY_CORRECTION_DEFS[c]["label"] == correction_choice][0]
+                                    correction_hex = category_correction_palette(category)
+                                    clf.learn(entry["text"], category)
+                                    save_diary_classifier(user_id, clf)
+                                    cvae_model.fine_tune(entry_vad, correction_hex, steps=30)
                                     ran, loss_before, loss_after = cvae_model.maybe_periodic_retrain()
                                     save_cvae_model(user_id, cvae_model)
                                     msg = "Tier 1 + Tier 2 updated: classifier and CVAE both retrained on this correction."
