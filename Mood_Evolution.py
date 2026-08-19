@@ -53,6 +53,11 @@ CATEGORY_ANCHORS_VAD = {
     "guilt":    (-0.55,  0.10, -0.40),
     "pride":    ( 0.65,  0.45,  0.60),
     "boredom":  (-0.35, -0.65, -0.10),
+    # anxiety: genuinely close to both stress and fear in VAD space (Warriner
+    # norms put it almost exactly between them) -- see the seed examples for
+    # how the wording tries to distinguish it (anticipatory worry) from
+    # stress (external pressure) and fear (acute threat).
+    "anxiety":  (-0.58,  0.58, -0.38),
 }
 
 CATEGORIES = list(CATEGORY_ANCHORS_VAD.keys())
@@ -160,6 +165,12 @@ SEED_EXAMPLES = {
         "Restless but too flat to do anything about it.",
         "Same routine again, nothing to look forward to.",
     ],
+    "anxiety": [
+        "I can't stop worrying about things that haven't even happened yet.",
+        "A constant low hum of unease, I keep checking my phone for no reason.",
+        "My mind won't stop running through worst-case scenarios.",
+        "Something feels off and I can't shake this nervous, unsettled feeling.",
+    ],
 }
 
 _READING_MAP = {
@@ -171,6 +182,7 @@ _READING_MAP = {
     "fear": "A tightening, watchful edge", "surprise": "The floor tilting, bright and sudden",
     "disgust": "A recoil, pulling away", "guilt": "A weight carried quietly",
     "pride": "Standing taller, quietly certain", "boredom": "Flat hours, waiting for something",
+    "anxiety": "A low hum, worry running just under everything",
 }
 
 
@@ -275,6 +287,8 @@ def deterministic_palette(valence, energy01, clarity, turbulence, theme_scores):
         hue, accent_hue, sat = 20, 45, 0.6
     elif T.get("boredom", 0) > 0.4:
         hue, accent_hue, sat = 200, 220, 0.18
+    elif T.get("anxiety", 0) > 0.4:
+        hue, accent_hue, sat = 235, 280, 0.5
     else:
         hue, accent_hue, sat = 270, 320, 0.45
 
@@ -338,6 +352,7 @@ CATEGORY_CORRECTION_DEFS = {
     "guilt":    dict(label="Guilt",    theme_scores={"guilt": 0.7},    valence=-0.55, energy01=0.55,  clarity=0.3,  turbulence=0.45),
     "pride":    dict(label="Pride",    theme_scores={"pride": 0.8},    valence=0.65,  energy01=0.725, clarity=0.7,  turbulence=0.15),
     "boredom":  dict(label="Boredom",  theme_scores={"boredom": 0.7},  valence=-0.35, energy01=0.175, clarity=0.3,  turbulence=0.15),
+    "anxiety":  dict(label="Anxiety",  theme_scores={"anxiety": 0.8},  valence=-0.58, energy01=0.79,  clarity=0.25, turbulence=0.65),
 }
 
 
