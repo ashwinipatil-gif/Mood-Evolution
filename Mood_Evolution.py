@@ -3,6 +3,7 @@ import os
 import json
 import sqlite3
 import pickle
+import base64
 from datetime import datetime
 import datetime as dt
 import hashlib
@@ -1330,54 +1331,104 @@ def _user_path(user_id, filename):
     return os.path.join(user_dir(user_id), filename)
 
 
-def _load_pickle(path, cls, *init_args, **init_kwargs):
+def _model_state_to_b64(obj):
+    """Serializes a model's get_state() (including any torch tensors --
+    pickle handles those natively) to a base64 string, so it can go in a
+    plain Supabase text column the same way palettes already go in as JSON."""
+    return base64.b64encode(pickle.dumps(obj.get_state())).decode("ascii")
+
+
+def _model_state_from_b64(b64_str):
+    return pickle.loads(base64.b64decode(b64_str))
+
+
+def _load_pickle(path, cls, *init_args, user_id=None, model_name=None, **init_kwargs):
+    """
+    Previously local-disk only (`path`). On Streamlit Community Cloud the
+    container filesystem is wiped on every redeploy, so every trained
+    classifier/CVAE/image model was silently lost each time -- unlike diary
+    entries, which already went through Supabase. This adds the same
+    Supabase-backed durability for model state, keyed by (user_id,
+    model_name). Requires a `model_state` table -- see the SQL comment
+    below `_get_supabase_client()`. Falls back to local disk, then to a
+    fresh model, exactly as before, if Supabase isn't configured or the
+    table doesn't exist yet.
+    """
+    supabase = _get_supabase_client()
+    if supabase and user_id and model_name:
+        try:
+            res = (supabase.table("model_state").select("state_b64")
+                   .eq("user_id", user_id).eq("model_name", model_name).execute())
+            if res.data:
+                obj = cls.__new__(cls)
+                obj.load_state(_model_state_from_b64(res.data[0]["state_b64"]))
+                return obj
+        except Exception as e:
+            print(f"WARNING: Supabase model-state read failed ({model_name}): {e}")
+
     if os.path.exists(path):
         obj = cls.__new__(cls)
         with open(path, "rb") as f:
             state = pickle.load(f)
         obj.load_state(state)
         return obj
+
     obj = cls(*init_args, **init_kwargs)
-    _save_pickle(path, obj)
+    _save_pickle(path, obj, user_id=user_id, model_name=model_name)
     return obj
 
 
-def _save_pickle(path, obj):
+def _save_pickle(path, obj, user_id=None, model_name=None):
     with open(path, "wb") as f:
         pickle.dump(obj.get_state(), f)
 
+    supabase = _get_supabase_client()
+    if supabase and user_id and model_name:
+        try:
+            supabase.table("model_state").upsert({
+                "user_id": user_id,
+                "model_name": model_name,
+                "state_b64": _model_state_to_b64(obj),
+            }, on_conflict="user_id,model_name").execute()
+        except Exception as e:
+            print(f"WARNING: Supabase model-state write failed ({model_name}): {e}")
+
 
 def load_diary_classifier(user_id):
-    return _load_pickle(_user_path(user_id, "diary_classifier.pkl"), DiaryMoodClassifier)
+    return _load_pickle(_user_path(user_id, "diary_classifier.pkl"), DiaryMoodClassifier,
+                         user_id=user_id, model_name="diary_classifier")
 
 
 def save_diary_classifier(user_id, clf):
-    _save_pickle(_user_path(user_id, "diary_classifier.pkl"), clf)
+    _save_pickle(_user_path(user_id, "diary_classifier.pkl"), clf, user_id=user_id, model_name="diary_classifier")
 
 
 def load_art_model(user_id):
-    return _load_pickle(_user_path(user_id, "art_model.pkl"), ArtColorModel)
+    return _load_pickle(_user_path(user_id, "art_model.pkl"), ArtColorModel,
+                         user_id=user_id, model_name="art_model")
 
 
 def save_art_model(user_id, model):
-    _save_pickle(_user_path(user_id, "art_model.pkl"), model)
+    _save_pickle(_user_path(user_id, "art_model.pkl"), model, user_id=user_id, model_name="art_model")
 
 
 def load_cvae_model(user_id):
-    return _load_pickle(_user_path(user_id, "cvae_model.pkl"), CVAEArtModel, epochs=80)
+    return _load_pickle(_user_path(user_id, "cvae_model.pkl"), CVAEArtModel, epochs=80,
+                         user_id=user_id, model_name="cvae_model")
 
 
 def save_cvae_model(user_id, model):
-    _save_pickle(_user_path(user_id, "cvae_model.pkl"), model)
+    _save_pickle(_user_path(user_id, "cvae_model.pkl"), model, user_id=user_id, model_name="cvae_model")
 
 
 def load_image_art_model(user_id):
     return _load_pickle(_user_path(user_id, "image_art_model.pkl"),
-                         GenerativeArtImageModel, n_synthetic_samples=360, epochs=55)
+                         GenerativeArtImageModel, n_synthetic_samples=360, epochs=55,
+                         user_id=user_id, model_name="image_art_model")
 
 
 def save_image_art_model(user_id, model):
-    _save_pickle(_user_path(user_id, "image_art_model.pkl"), model)
+    _save_pickle(_user_path(user_id, "image_art_model.pkl"), model, user_id=user_id, model_name="image_art_model")
 
 
 DB_PATH = os.path.join(USER_DIR, "analysis.db")
