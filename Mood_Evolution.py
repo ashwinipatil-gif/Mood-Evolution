@@ -1,3 +1,4 @@
+
 import os
 import json
 import sqlite3
@@ -1412,13 +1413,117 @@ def save_art_model(user_id, model):
     _save_pickle(_user_path(user_id, "art_model.pkl"), model, user_id=user_id, model_name="art_model")
 
 
+GLOBAL_MODEL_USER = "__global__"  # reserved pseudo-user id for the shared CVAE baseline checkpoint
+
+
+def _model_state_exists(path, user_id, model_name):
+    if os.path.exists(path):
+        return True
+    supabase = _get_supabase_client()
+    if supabase:
+        try:
+            res = (supabase.table("model_state").select("model_name")
+                   .eq("user_id", user_id).eq("model_name", model_name).limit(1).execute())
+            return bool(res.data)
+        except Exception:
+            return False
+    return False
+
+
 def load_cvae_model(user_id):
-    return _load_pickle(_user_path(user_id, "cvae_model.pkl"), CVAEArtModel, epochs=80,
-                         user_id=user_id, model_name="cvae_model")
+    """
+    Existing users load their own saved state, exactly as before.
+
+    NEW: a brand-new user (no saved CVAE state of their own yet) seeds from
+    the GLOBAL checkpoint (GLOBAL_MODEL_USER) if one exists, instead of
+    always starting from pure synthetic-only training. The global
+    checkpoint is refreshed opportunistically -- whenever ANY user's
+    periodic retrain fires (every 10th real correction), that
+    freshly-retrained model is also pushed to the global slot (see the
+    three call sites that push to GLOBAL_MODEL_USER after
+    maybe_periodic_retrain()).
+
+    This is NOT a true multi-user aggregate -- it doesn't merge different
+    users' corrections into one training pass. It's simpler: a new user
+    inherits whichever model was most recently refreshed by someone's
+    periodic retrain, then is saved under their OWN user_id immediately and
+    evolves independently from that point on -- they are not continuously
+    synced to the global checkpoint after this initial seed. Scoped to the
+    CVAE only (the actual reported problem); the classifier, ArtColorModel,
+    and GenerativeArtImageModel are untouched and still cold-start fresh
+    per user.
+    """
+    own_path = _user_path(user_id, "cvae_model.pkl")
+    if _model_state_exists(own_path, user_id, "cvae_model"):
+        return _load_pickle(own_path, CVAEArtModel, epochs=80, user_id=user_id, model_name="cvae_model")
+
+    global_path = _user_path(GLOBAL_MODEL_USER, "cvae_model.pkl")
+    if _model_state_exists(global_path, GLOBAL_MODEL_USER, "cvae_model"):
+        model = _load_pickle(global_path, CVAEArtModel, epochs=80,
+                              user_id=GLOBAL_MODEL_USER, model_name="cvae_model")
+        save_cvae_model(user_id, model)  # fork immediately -- independent from here on
+        return model
+
+    return _load_pickle(own_path, CVAEArtModel, epochs=80, user_id=user_id, model_name="cvae_model")
 
 
 def save_cvae_model(user_id, model):
     _save_pickle(_user_path(user_id, "cvae_model.pkl"), model, user_id=user_id, model_name="cvae_model")
+
+
+def seed_global_cvae_checkpoint(epochs=80, steps_per_category=30, verbose=True):
+    """
+    Pre-seeds GLOBAL_MODEL_USER's CVAE checkpoint by fine-tuning across ALL
+    real categories in one deliberate pass, instead of waiting for real
+    corrections to incidentally cover a spread of moods before the periodic
+    retrain threshold fires. Run this ONCE, before real users arrive --
+    every brand-new user's first "Auto (detected)" palette will then start
+    from this differentiated baseline via load_cvae_model()'s global-seed
+    fallback, instead of the raw synthetic-only baseline.
+
+    Uses each category's own CATEGORY_CORRECTION_DEFS entry as the ground
+    truth (same reference palette real corrections already train toward),
+    so this is not a shortcut around the real mechanism -- it's the same
+    fine_tune() call the UI makes, just run for every category at once
+    instead of waiting on incidental usage.
+
+    Requires SUPABASE_URL/SUPABASE_KEY to be set in THIS environment to the
+    SAME project your deployed app uses -- otherwise this only writes to a
+    local file the deployed app will never see.
+    """
+    supabase = _get_supabase_client()
+    if supabase is None:
+        print("WARNING: no Supabase client in this environment (SUPABASE_URL/SUPABASE_KEY not set).")
+        print("This will only save locally -- the deployed app will NOT see it. Set the same")
+        print("SUPABASE_URL/SUPABASE_KEY here as in your Streamlit secrets before running this.")
+
+    model = CVAEArtModel(epochs=epochs)  # fresh synthetic-only start, same as any new user gets
+
+    if verbose:
+        print(f"Seeding across {len(CATEGORIES)} categories, {steps_per_category} steps each...")
+
+    for category in CATEGORIES:
+        d = CATEGORY_CORRECTION_DEFS[category]
+        real_dominance = CATEGORY_ANCHORS_VAD[category][2]  # real anchor value, not a placeholder
+        vad = {"valence": d["valence"], "arousal": d["energy01"] * 2 - 1, "dominance": real_dominance,
+               "clarity": d["clarity"], "turbulence": d["turbulence"]}
+        target_hex = category_correction_palette(category)
+        model.fine_tune(vad, target_hex, steps=steps_per_category)
+        if verbose:
+            print(f"  {category:12s} -> {target_hex}")
+
+    # A real batch retrain over everything just added, same mechanism as
+    # maybe_periodic_retrain() -- not the incidental-usage %10 trigger,
+    # since this is a deliberate one-time seed, not simulated real usage.
+    loss_before, loss_after = model._train(epochs=60, lr=1e-3, verbose=verbose)
+    if verbose:
+        print(f"Batch retrain: loss {loss_before:.4f} -> {loss_after:.4f}")
+        print(f"n_real_corrections after seeding: {model.n_real_corrections}")
+
+    save_cvae_model(GLOBAL_MODEL_USER, model)
+    if verbose:
+        print(f"Saved to GLOBAL_MODEL_USER ('{GLOBAL_MODEL_USER}'). New users will now seed from this.")
+    return model
 
 
 def load_image_art_model(user_id):
@@ -2275,6 +2380,7 @@ def run_streamlit_app():
                     if ran:
                         st.toast(f"Periodic retrain: {cvae_model.n_real_corrections} real corrections folded in "
                                  f"together. Loss {loss_before:.4f} -> {loss_after:.4f}.")
+                        save_cvae_model(GLOBAL_MODEL_USER, cvae_model)  # refresh the shared new-user baseline
                     save_cvae_model(user_id, cvae_model)
 
                 if art_mode.startswith("AI-generated"):
@@ -2344,6 +2450,8 @@ def run_streamlit_app():
                                     # Same as a Today-tab "custom" override: Tier 2 (CVAE) only.
                                     cvae_model.fine_tune(entry_vad, corrected_palette, steps=30)
                                     ran, loss_before, loss_after = cvae_model.maybe_periodic_retrain()
+                                    if ran:
+                                        save_cvae_model(GLOBAL_MODEL_USER, cvae_model)  # refresh shared baseline
                                     save_cvae_model(user_id, cvae_model)
                                     # Previously missing entirely: the record itself was never updated,
                                     # only the models -- so neither the Archive thumbnail nor any report
@@ -2362,6 +2470,7 @@ def run_streamlit_app():
                                     else:
                                         msg += f" WARNING: entry record update failed: {entry_status}"
                                     st.success(msg)
+                                    st.rerun()  # without this, the thumbnail below still shows pre-correction data
                                 else:
                                     # Same as a Today-tab "preset" override: Tier 1 + Tier 2.
                                     # Covers all 11 real categories now, not just the 6 palette presets.
@@ -2371,6 +2480,8 @@ def run_streamlit_app():
                                     save_diary_classifier(user_id, clf)
                                     cvae_model.fine_tune(entry_vad, correction_hex, steps=30)
                                     ran, loss_before, loss_after = cvae_model.maybe_periodic_retrain()
+                                    if ran:
+                                        save_cvae_model(GLOBAL_MODEL_USER, cvae_model)  # refresh shared baseline
                                     save_cvae_model(user_id, cvae_model)
                                     entry_status = update_entry(user_id, entry, {
                                         "corrected_category": category,
@@ -2387,6 +2498,7 @@ def run_streamlit_app():
                                     else:
                                         msg += f" WARNING: entry record update failed: {entry_status}"
                                     st.success(msg)
+                                    st.rerun()  # without this, the thumbnail below still shows pre-correction data
                 st.divider()
 
     with tab_evolution:
@@ -2755,3 +2867,4 @@ if __name__ == "__main__":
         run_streamlit_app()
     else:
         run_full_pipeline_evaluation()
+    seed_global_cvae_checkpoint()
