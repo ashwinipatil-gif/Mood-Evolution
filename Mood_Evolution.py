@@ -2867,4 +2867,3 @@ if __name__ == "__main__":
         run_streamlit_app()
     else:
         run_full_pipeline_evaluation()
-    seed_global_cvae_checkpoint()
