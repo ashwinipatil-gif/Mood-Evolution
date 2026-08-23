@@ -2219,6 +2219,24 @@ def run_streamlit_app():
             shutil.rmtree(user_dir_path)
         st.sidebar.success("Cleared. Reload the page.")
 
+    with st.sidebar.expander("Admin"):
+        st.caption("Runs inside this deployed app -- uses the same "
+                   "SUPABASE_URL/SUPABASE_KEY already set in Streamlit's "
+                   "secrets. No separate credentials needed here.")
+        admin_pass = st.text_input("Admin passphrase", type="password", key="admin_pass")
+        if st.button("Seed global CVAE baseline"):
+            expected = os.environ.get("ADMIN_SEED_PASSPHRASE")
+            if not expected:
+                st.error("ADMIN_SEED_PASSPHRASE is not set in this app's secrets -- "
+                         "add it once (any value you choose) to enable this button.")
+            elif admin_pass != expected:
+                st.error("Wrong passphrase.")
+            else:
+                with st.spinner("Seeding across all categories, then batch retraining "
+                                 "(this takes a while -- real training, not instant)..."):
+                    seed_global_cvae_checkpoint(verbose=False)
+                st.success("Global CVAE baseline seeded. New users will now start from it.")
+
     clf = load_diary_classifier(user_id)
     cvae_model = load_cvae_model(user_id)
     image_art_model = load_image_art_model(user_id)
