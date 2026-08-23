@@ -1,9 +1,9 @@
-
 import os
 import json
 import sqlite3
 import pickle
 import base64
+import uuid
 from datetime import datetime
 import datetime as dt
 import hashlib
@@ -1478,8 +1478,9 @@ def load_entry_history(user_id):
     supabase = _get_supabase_client()
     if supabase:
         try:
-            res = supabase.table("diary_entries").select("*").eq("user_id", user_id).execute()
-            data = res.data or []
+            res = (supabase.table("diary_entries").select("*").eq("user_id", user_id)
+                   .order("logged_at").execute())  # deterministic order -- Archive position
+            data = res.data or []                  # must be stable across reruns
             for row in data:
                 if isinstance(row.get("palette"), str):
                     row["palette"] = json.loads(row["palette"])
@@ -1503,7 +1504,16 @@ def append_entry(user_id, entry):
     blocking it). Surfaced directly in the UI so this doesn't require
     reading server logs or manually refreshing the Supabase dashboard to
     debug -- both of which have proven slow and inconclusive so far.
+
+    Assigns entry["entry_id"] (a client-generated UUID) BEFORE writing
+    anywhere -- this is what makes a later correction (update_entry) able to
+    target this exact row in either storage backend. Supabase's own auto
+    `id` column isn't usable for this: local-only entries never get one,
+    since they never pass through Supabase at all.
     """
+    if "entry_id" not in entry:
+        entry["entry_id"] = str(uuid.uuid4())
+
     history = load_entry_history(user_id)
     history.append(entry)
 
@@ -1513,6 +1523,7 @@ def append_entry(user_id, entry):
         try:
             db_row = {
                 "user_id": user_id,
+                "entry_id": entry.get("entry_id"),
                 "date": entry.get("date"),
                 "text": entry.get("text"),
                 "valence": entry.get("valence"),
@@ -1536,6 +1547,55 @@ def append_entry(user_id, entry):
         json.dump(history, f, indent=2)
 
     return history, cloud_status
+
+
+def update_entry(user_id, entry, updates):
+    """
+    Applies `updates` (e.g. {"corrected_category": "joy", "palette": [...]})
+    to one existing entry, in BOTH storage backends. This is what "Correct
+    this entry" was missing entirely -- it updated the classifier/CVAE but
+    never wrote the correction back to the entry record itself, so the
+    Archive view (and any report evidence pulled from it) never reflected
+    what was actually corrected.
+
+    Matches by entry["entry_id"] when present (all entries created after
+    this patch). Falls back to matching on (user_id, date, text) for older
+    rows that predate entry_id existing at all -- reasonably unique in
+    practice, but not guaranteed if you sealed two identical entries on the
+    same day.
+
+    Returns cloud_status, same convention as append_entry.
+    """
+    entry_id = entry.get("entry_id")
+    supabase = _get_supabase_client()
+    cloud_status = "local_only"
+
+    if supabase:
+        try:
+            q = supabase.table("diary_entries").update(updates).eq("user_id", user_id)
+            if entry_id:
+                q = q.eq("entry_id", entry_id)
+            else:
+                q = q.eq("date", entry.get("date")).eq("text", entry.get("text"))
+            q.execute()
+            cloud_status = "saved"
+        except Exception as e:
+            print(f"WARNING: Supabase update failed: {e}")
+            cloud_status = str(e)
+
+    path = _user_path(user_id, "entries.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            local_history = json.load(f)
+        for row in local_history:
+            matches = (row.get("entry_id") == entry_id if entry_id
+                       else row.get("date") == entry.get("date") and row.get("text") == entry.get("text"))
+            if matches:
+                row.update(updates)
+        with open(path, "w") as f:
+            json.dump(local_history, f, indent=2)
+
+    return cloud_status
 
 
 # ==============================================================================
@@ -2285,10 +2345,22 @@ def run_streamlit_app():
                                     cvae_model.fine_tune(entry_vad, corrected_palette, steps=30)
                                     ran, loss_before, loss_after = cvae_model.maybe_periodic_retrain()
                                     save_cvae_model(user_id, cvae_model)
+                                    # Previously missing entirely: the record itself was never updated,
+                                    # only the models -- so neither the Archive thumbnail nor any report
+                                    # evidence pulled from the DB ever reflected what was corrected.
+                                    entry_status = update_entry(user_id, entry, {
+                                        "palette": corrected_palette,
+                                    })
                                     msg = "Tier 2 updated: CVAE fine-tuned on this correction."
                                     if ran:
                                         msg += (f" Periodic retrain also ran ({cvae_model.n_real_corrections} real "
                                                 f"corrections so far). Loss {loss_before:.4f} -> {loss_after:.4f}.")
+                                    if entry_status == "saved":
+                                        msg += " Entry record and thumbnail updated."
+                                    elif entry_status == "local_only":
+                                        msg += " Entry record updated locally only (no Supabase client)."
+                                    else:
+                                        msg += f" WARNING: entry record update failed: {entry_status}"
                                     st.success(msg)
                                 else:
                                     # Same as a Today-tab "preset" override: Tier 1 + Tier 2.
@@ -2300,10 +2372,20 @@ def run_streamlit_app():
                                     cvae_model.fine_tune(entry_vad, correction_hex, steps=30)
                                     ran, loss_before, loss_after = cvae_model.maybe_periodic_retrain()
                                     save_cvae_model(user_id, cvae_model)
+                                    entry_status = update_entry(user_id, entry, {
+                                        "corrected_category": category,
+                                        "palette": correction_hex,
+                                    })
                                     msg = "Tier 1 + Tier 2 updated: classifier and CVAE both retrained on this correction."
                                     if ran:
                                         msg += (f" Periodic retrain also ran ({cvae_model.n_real_corrections} real "
                                                 f"corrections so far). Loss {loss_before:.4f} -> {loss_after:.4f}.")
+                                    if entry_status == "saved":
+                                        msg += " Entry record and thumbnail updated."
+                                    elif entry_status == "local_only":
+                                        msg += " Entry record updated locally only (no Supabase client)."
+                                    else:
+                                        msg += f" WARNING: entry record update failed: {entry_status}"
                                     st.success(msg)
                 st.divider()
 
