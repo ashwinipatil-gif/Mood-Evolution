@@ -1495,10 +1495,20 @@ def load_entry_history(user_id):
 
 
 def append_entry(user_id, entry):
+    """
+    Returns (history, cloud_status): cloud_status is "saved" (Supabase write
+    succeeded), "local_only" (no Supabase client configured -- keys missing),
+    or an error string (Supabase configured but the write failed -- most
+    commonly this means the table doesn't exist yet, or an RLS policy is
+    blocking it). Surfaced directly in the UI so this doesn't require
+    reading server logs or manually refreshing the Supabase dashboard to
+    debug -- both of which have proven slow and inconclusive so far.
+    """
     history = load_entry_history(user_id)
     history.append(entry)
 
     supabase = _get_supabase_client()
+    cloud_status = "local_only"
     if supabase:
         try:
             db_row = {
@@ -1517,13 +1527,15 @@ def append_entry(user_id, entry):
                 "palette": entry.get("palette")
             }
             supabase.table("diary_entries").insert(db_row).execute()
+            cloud_status = "saved"
         except Exception as e:
             print(f"WARNING: Supabase write failed: {e}")
+            cloud_status = str(e)
 
     with open(_user_path(user_id, "entries.json"), "w") as f:
         json.dump(history, f, indent=2)
 
-    return history
+    return history, cloud_status
 
 
 # ==============================================================================
@@ -2191,7 +2203,7 @@ def run_streamlit_app():
                     "style": style_choice,
                     "corrected_category": corrected_category,
                 }
-                append_entry(user_id, entry)
+                _, cloud_status = append_entry(user_id, entry)
 
                 if override_for_training:
                     kind, value = override_for_training
@@ -2211,7 +2223,15 @@ def run_streamlit_app():
 
                 st.session_state.draft_text = ""
                 del st.session_state["last_result"]
-                st.success("Sealed! See Archive and Evolution tabs.")
+                if cloud_status == "saved":
+                    st.success("Sealed! Saved to Supabase -- will survive a redeploy. See Archive and Evolution tabs.")
+                elif cloud_status == "local_only":
+                    st.warning("Sealed, but saved LOCALLY ONLY (no Supabase client -- check SUPABASE_URL/"
+                               "SUPABASE_KEY in your app's secrets). This will be lost on the next redeploy.")
+                else:
+                    st.error(f"Sealed, but the Supabase write FAILED: {cloud_status}\n\n"
+                             "Saved locally as a fallback -- this will be lost on the next redeploy. "
+                             "Check that the diary_entries table exists and its RLS policy allows this write.")
                 st.rerun()
 
     with tab_archive:
