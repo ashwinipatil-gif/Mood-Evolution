@@ -2121,9 +2121,9 @@ def run_streamlit_app():
             ax.axhline(0, color="#d9b673", alpha=0.2, linestyle="--", linewidth=1)
             ax.tick_params(colors="#b8b0a4", labelsize=8)
             for spine in ax.spines.values():
-    spine.set_color("#d9b673")
-    spine.set_alpha(0.15)
-ax.legend(facecolor="#14131a", edgecolor="#d9b673", labelcolor="#f2ede4", fontsize=8)
+            spine.set_color("#d9b673")
+            spine.set_alpha(0.15)
+            ax.legend(facecolor="#14131a", edgecolor="#d9b673", labelcolor="#f2ede4", fontsize=8)
             
 
 
