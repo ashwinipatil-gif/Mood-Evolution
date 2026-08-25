@@ -1,7 +1,3 @@
-
-Imports
-
-
 import os
 import json
 import sqlite3
@@ -48,11 +44,6 @@ try:
 except ImportError:
     st = None
      
-DATA & CONSTANTS
-
-The 23 mood categories and their fixed VAD anchor points, plus the 92-sentence synthetic bootstrap training set.
-
-
 # ==============================================================================
 # 1. GEOMETRICALLY SEPARATED VAD ANCHORS
 # ==============================================================================
@@ -300,25 +291,6 @@ elif acc >= 0.80:
 else:
     print("✗ PROBLEM: High misclassification rate.")
 print("=" * 75)
-     
-===========================================================================
-1. VAD ANCHOR GEOMETRY EVALUATION
-===========================================================================
-Total Emotion Categories: 23
-Average Distance Between Anchors: 1.183
-Closest Pair: 'light' <-> 'gratitude' (Distance: 0.166)
-✓ SUCCESS: All VAD anchors are well-separated in 3D emotional space.
-
-===========================================================================
-2. SEED EXAMPLES CLASSIFIER EVALUATION (LOOCV)
-===========================================================================
-Leave-One-Out Accuracy: 90.2% (83/92 correct)
-✓ SUCCESS: Seed examples achieve clear class separation with calibrated probabilities.
-===========================================================================
-EMOTIONAL MAPPER
-
-Maps a probability distribution over categories into continuous VAD + clarity/turbulence: a fixed, designed transformation, not a fitted model.
-
 
 class EmotionalMapper:
     def __init__(self, category_anchors=None):
@@ -465,94 +437,7 @@ def evaluate_emotional_mapper(mapper_cls, anchors, reading_map):
 
 # Run evaluation
 evaluate_emotional_mapper(EmotionalMapper, CATEGORY_ANCHORS_VAD, _READING_MAP)
-     
-================================================================================
-                 EMOTIONAL MAPPER BEHAVIOR & BOUNDS EVALUATION                  
-================================================================================
-
-1. Single-Category Boundary & Alignment Check (All 23 Emotions)
---------------------------------------------------------------------------------
-Category       | VAD Expected           | VAD Output             | Style   | Clarity/Turb
---------------------------------------------------------------------------------
-stress         | (-0.55, +0.75, -0.30)  | (-0.55, +0.75, -0.30)  | silk    | 0.30 / 0.78 
-anger          | (-0.75, +0.90, +0.50)  | (-0.75, +0.90, +0.50)  | silk    | 0.50 / 0.79 
-calm           | (+0.55, -0.50, +0.40)  | (+0.55, -0.50, +0.40)  | cloud   | 0.50 / 0.00 
-clarity        | (+0.65, +0.15, +0.60)  | (+0.65, +0.15, +0.60)  | prism   | 1.00 / 0.11 
-focus          | (+0.35, +0.05, +0.55)  | (+0.35, +0.05, +0.55)  | prism   | 0.50 / 0.11 
-sad            | (-0.70, -0.25, -0.60)  | (-0.70, -0.25, -0.60)  | cloud   | 0.50 / 0.08 
-fog            | (-0.35, -0.20, -0.40)  | (-0.35, -0.20, -0.40)  | silk    | 0.00 / 0.08 
-heavy          | (-0.50, -0.60, -0.55)  | (-0.50, -0.60, -0.55)  | silk    | 0.50 / 0.04 
-hope           | (+0.50, +0.30, +0.10)  | (+0.50, +0.30, +0.10)  | silk    | 0.50 / 0.13 
-joy            | (+0.85, +0.70, +0.55)  | (+0.85, +0.70, +0.55)  | silk    | 0.50 / 0.17 
-light          | (+0.65, -0.10, +0.20)  | (+0.65, -0.10, +0.20)  | prism   | 0.80 / 0.09 
-fear           | (-0.70, +0.75, -0.60)  | (-0.70, +0.75, -0.60)  | silk    | 0.50 / 0.18 
-surprise       | (+0.20, +0.85, +0.05)  | (+0.20, +0.85, +0.05)  | silk    | 0.50 / 0.19 
-disgust        | (-0.65, +0.40, +0.20)  | (-0.65, +0.40, +0.20)  | silk    | 0.50 / 0.14 
-guilt          | (-0.50, +0.10, -0.45)  | (-0.50, +0.10, -0.45)  | silk    | 0.50 / 0.11 
-pride          | (+0.75, +0.55, +0.75)  | (+0.75, +0.55, +0.75)  | silk    | 0.50 / 0.16 
-boredom        | (-0.30, -0.75, -0.10)  | (-0.30, -0.75, -0.10)  | silk    | 0.50 / 0.03 
-love           | (+0.85, +0.35, +0.40)  | (+0.85, +0.35, +0.40)  | silk    | 0.50 / 0.14 
-gratitude      | (+0.70, +0.05, +0.25)  | (+0.70, +0.05, +0.25)  | silk    | 0.50 / 0.11 
-loneliness     | (-0.65, -0.40, -0.50)  | (-0.65, -0.40, -0.50)  | silk    | 0.50 / 0.06 
-excitement     | (+0.75, +0.90, +0.45)  | (+0.75, +0.90, +0.45)  | silk    | 0.50 / 0.19 
-frustration    | (-0.60, +0.60, +0.25)  | (-0.60, +0.60, +0.25)  | silk    | 0.50 / 0.16 
-nostalgia      | (+0.15, -0.15, -0.05)  | (+0.15, -0.15, -0.05)  | silk    | 0.50 / 0.09 
-
-2. Complex Mood Blends & Dynamic Style Routing
---------------------------------------------------------------------------------
-Scenario: High Stress Burnout
-  • Top Emotion:  [STRESS]
-  • Coordinates:  V: -0.52, A: +0.25, D: -0.39
-  • Clarity/Turb: Clarity=0.32 | Turbulence=0.48
-  • Assigned Style: <SILK>
-  • Poetic Reading: "A charged, restless current"
-
-Scenario: Quiet Meditative Peace
-  • Top Emotion:  [CALM]
-  • Coordinates:  V: +0.45, A: -0.36, D: +0.27
-  • Clarity/Turb: Clarity=0.50 | Turbulence=0.00
-  • Assigned Style: <CLOUD>
-  • Poetic Reading: "Settling into quiet ground"
-
-Scenario: Sharp Analytical Flow
-  • Top Emotion:  [CLARITY]
-  • Coordinates:  V: +0.53, A: +0.08, D: +0.54
-  • Clarity/Turb: Clarity=0.78 | Turbulence=0.11
-  • Assigned Style: <PRISM>
-  • Poetic Reading: "A clearing — light finding form"
-
-Scenario: Bittersweet Longing
-  • Top Emotion:  [NOSTALGIA]
-  • Coordinates:  V: +0.04, A: -0.08, D: -0.12
-  • Clarity/Turb: Clarity=0.50 | Turbulence=0.09
-  • Assigned Style: <SILK>
-  • Poetic Reading: "A faded photograph, half-smiling"
-
-Scenario: Turbulent Rage & Chaos
-  • Top Emotion:  [ANGER]
-  • Coordinates:  V: -0.69, A: +0.79, D: +0.35
-  • Clarity/Turb: Clarity=0.48 | Turbulence=0.60
-  • Assigned Style: <SILK>
-  • Poetic Reading: "Heat rising to the surface"
-
-Scenario: Equally Mixed Ambivalence
-  • Top Emotion:  [STRESS]
-  • Coordinates:  V: +0.03, A: +0.19, D: +0.07
-  • Clarity/Turb: Clarity=0.50 | Turbulence=0.15
-  • Assigned Style: <SILK>
-  • Poetic Reading: "A charged, restless current"
-
-================================================================================
-FINAL MAPPER DIAGNOSTIC
-================================================================================
-Anchor Accuracy:        100% Match
-Metric Boundary Checks: 0 Violations
-✓ SUCCESS: EmotionalMapper produces bounded, linearly sound VAD and style mappings.
-================================================================================
-CURATED PALETTE MAPPER
-
-The actual colour-design rule: a curated affective colour-mapping system, deterministic, hand-tuned. This is the honest core of 'colour generation' in this project.
-
+    
 
 def hsl_to_rgb01(h, s, l):
     h = (h % 360) / 360.0
@@ -757,58 +642,6 @@ def evaluate_color_pipeline():
 
 # Run evaluation
 evaluate_color_pipeline()
-     
-=====================================================================================
-                   DETERMINISTIC COLOR PALETTE & PRESET EVALUATION                   
-=====================================================================================
-
-1. Curated User Presets (6 Core States)
--------------------------------------------------------------------------------------
-Preset [calm]:                        [#0f130d #361f3d #7b53bf #cdbed4]
-Preset [clarity]:                      [#0d0b13 #441a36 #d5c34c #dde1ca]
-Preset [warmth]:                      [#0b1212 #453a1a #d44375 #dbbec0]
-Preset [fog]:                         [#0f120d #402340 #7652b6 #c4b4cc]
-Preset [stress]:                      [#080e12 #5d1521 #f21f18 #dabaa9]
-Preset [sorrow]:                      [#13130e #2c233e #577ab5 #b9bace]
-
-2. All 23 Category Correction Palettes
--------------------------------------------------------------------------------------
-Stress:                               [#080e12 #5d1521 #f21f18 #dabaa9]
-Anger:                                [#080e12 #601522 #f21819 #dab8a9]
-Calm:                                 [#0f130d #361f3d #7b53bf #cdbed4]
-Clarity:                              [#0d0b13 #441a36 #d5c34c #dde1ca]
-Focus:                                [#0b0a11 #301c43 #cfb64c #dadcc4]
-Sad:                                  [#13130e #2c233e #577ab5 #b9bace]
-Fog:                                  [#0f120d #402340 #7652b6 #c4b4cc]
-Heavy:                                [#0f120d #3f233f #7455b6 #c5b7cd]
-Hope:                                 [#0b1312 #453a1a #d44377 #dbbec0]
-Joy:                                  [#0a1111 #44391a #d34475 #dabfc0]
-Light:                                [#0c0a11 #421a35 #d3c24a #dadec6]
-Fear:                                 [#0a110b #301f53 #bf35d4 #d2aecc]
-Surprise:                             [#110d09 #51431b #32b9dc #b3c5d8]
-Disgust:                              [#100b11 #473a20 #8bc646 #bcd2b6]
-Guilt:                                [#0c0f11 #43262b #b46356 #cdc0b7]
-Pride:                                [#0a0c11 #453a1a #d58846 #ddd7c3]
-Boredom:                              [#12110f #272d38 #6793a3 #b7c0cd]
-Love:                                 [#0a1012 #473719 #da3d49 #dcc4bd]
-Gratitude:                            [#0d0b12 #421c2f #c5cd4b #d2dbc2]
-Loneliness:                           [#12100d #25253d #5b8fb0 #b7becd]
-Excitement:                           [#08110f #524315 #eb289f #ddb5c1]
-Frustration:                          [#091011 #571923 #e5253a #d7b4ac]
-Nostalgia:                            [#0d110d #25343c #9760b0 #d1bdd1]
-
-=====================================================================================
-PIPELINE DIAGNOSTIC SUMMARY
-=====================================================================================
-Total Presets Tested:       6  (Unique Output Palettes: 6)
-Total Categories Tested:    23 (Unique Output Palettes: 23)
-RGB Gamut Violations:       0
-Dimension/Shape Errors:     0
-✓ SUCCESS: All 23 categories generate unique, valid 12-dimensional color palettes.
-=====================================================================================
-DIARY CLASSIFIER - Multinomial Naive Bayes
-
-The one place text gets classified into a mood category. Functionally necessary, alongside the forecaster.
 
 
 class DiaryMoodClassifier:
@@ -980,75 +813,7 @@ def evaluate_diary_mood_classifier():
 
 # Run evaluation
 evaluate_diary_mood_classifier()
-     
-=====================================================================================
-                    DIARY MOOD CLASSIFIER INTEGRATION EVALUATION                     
-=====================================================================================
-
-1. Diary Entry Inference & VAD Mapping
--------------------------------------------------------------------------------------
-Text: "Woke up early, made tea, and enjoyed the quiet morning breeze."
-  [✓] Predicted: CALM         (Confidence: 21.2%) | Style: <silk>
-      Coordinates: V: +0.12 | A: +0.07 | D: +0.13 | Clarity: 0.50
-      Poetic: "Settling into quiet ground"
-
-Text: "Everything went wrong at work, furious with the endless delays and mistakes."
-  [✓] Predicted: ANGER        (Confidence: 10.6%) | Style: <silk>
-      Coordinates: V: -0.06 | A: +0.27 | D: +0.11 | Clarity: 0.49
-      Poetic: "Heat rising to the surface"
-
-Text: "Overwhelmed by back-to-back meetings and tight deadlines."
-  [✓] Predicted: STRESS       (Confidence: 15.3%) | Style: <silk>
-      Coordinates: V: -0.04 | A: +0.26 | D: +0.03 | Clarity: 0.48
-      Poetic: "A charged, restless current"
-
-Text: "I feel completely drained, exhausted, and weighed down today."
-  [✓] Predicted: HEAVY        (Confidence: 47.5%) | Style: <silk>
-      Coordinates: V: -0.23 | A: -0.18 | D: -0.23 | Clarity: 0.49
-      Poetic: "Weight, slowly loosening"
-
-Text: "Found an old photo album and spent hours remembering my childhood."
-  [✓] Predicted: NOSTALGIA    (Confidence: 8.3%) | Style: <silk>
-      Coordinates: V: +0.04 | A: +0.18 | D: +0.07 | Clarity: 0.50
-      Poetic: "A faded photograph, half-smiling"
-
-Text: "I pulled off the entire presentation successfully, so proud!"
-  [✓] Predicted: PRIDE        (Confidence: 12.0%) | Style: <silk>
-      Coordinates: V: +0.09 | A: +0.22 | D: +0.13 | Clarity: 0.50
-      Poetic: "Standing taller, quietly certain"
-
--------------------------------------------------------------------------------------
-2. Word Valence Scores Relative to Baseline
-Baseline Valence: +0.0304
--------------------------------------------------------------------------------------
-  • Word: joy              Score: +0.1211 (Positive)
-  • Word: peaceful         Score: +0.0211 (Neutral/OOV)
-  • Word: rage             Score: -0.0626 (Negative)
-  • Word: grief            Score: -0.0309 (Neutral/OOV)
-  • Word: exhausted        Score: -0.0426 (Neutral/OOV)
-  • Word: radiant          Score: +0.0570 (Positive)
-  • Word: unknownwordxyz   Score: +0.0000 (Neutral/OOV)
-
--------------------------------------------------------------------------------------
-3. Incremental Learning (`learn`) & State Persistence
--------------------------------------------------------------------------------------
-Training Set Size: 92 -> 93
-Target Correction: [FRUSTRATION]
-  • Before Learn: Top Category = [GRATITUDE] (Prob: 3.5%)
-  • After Learn:  Top Category = [FRUSTRATION] (Prob: 73.2%)
-
-=====================================================================================
-CLASSIFIER SYSTEM SUMMARY
-=====================================================================================
-Sample Sentence Matches:     6/6
-State Serialization Check:   ✓ Passed
-Word Scoring Directionality: ✓ Passed
-✓ SUCCESS: DiaryMoodClassifier handles inference, VAD projection, and online updates properly.
-=====================================================================================
-ART COLOUR MODEL - Linear Regression
-
-Learns to reproduce rule from a mood vector. One mood, one fixed output — not generative.
-
+    
 
 def _random_theme_scores(rng):
     scores = {c: 0.0 for c in CATEGORIES}
@@ -1253,54 +1018,7 @@ def evaluate_art_color_model():
 
 # Run evaluation
 evaluate_art_color_model()
-     
-=====================================================================================
-                    ART COLOR LINEAR REGRESSION MODEL EVALUATION                     
-=====================================================================================
-
-1. Fit & Approximation Quality (Linear vs Deterministic Non-Linear Target)
--------------------------------------------------------------------------------------
-Total Features (VAD + 23 Categories): 27
-Target Dimension (4 RGB Stops):        12
-Training Mean Squared Error (MSE):     0.004327
-Explained Variance (R² Score):         0.7641
-
-2. Visual Palette Reconstruction Check
--------------------------------------------------------------------------------------
-Scenario: High Calm
-  • Deterministic (GT):                      [#0f130d #361f3d #7b53bf #cdbed4]
-  • Linear Model Pred:                      [#10130c #341c44 #5e55ce #c7bdd8]
-
-Scenario: High Anger
-  • Deterministic (GT):                      [#080f12 #601522 #f2181c #dab7a9]
-  • Linear Model Pred:                      [#080e11 #5d1927 #e23036 #d7bcb1]
-
-Scenario: Bright Clarity
-  • Deterministic (GT):                      [#0d0b13 #441a36 #d5c44c #dde1ca]
-  • Linear Model Pred:                      [#0a0716 #4d0c3d #fff200 #e7f5b9]
-
-Scenario: Heavy Fog
-  • Deterministic (GT):                      [#0f120d #402340 #7552b6 #c3b4cc]
-  • Linear Model Pred:                      [#0f130c #41204a #6649d0 #c4b3d0]
-
--------------------------------------------------------------------------------------
-3. User Feedback & Online Correction (`learn`)
--------------------------------------------------------------------------------------
-Before Correction:                        [#0b1211 #463720 #cb498e #d7bcc3]
-Target Correction:                        [#1a0933 #561d5e #c44569 #f8a5c2]
-After Update:                             [#0b1211 #473721 #ca498d #d8bbc3]
-
-Data Summary: 800 synthetic + 1 user corrections (0.12% real)
-
-=====================================================================================
-MODEL SUMMARY
-=====================================================================================
-Fit Metric (R²):             0.7641
-Online Learning:             ✓ Verified (1 correction registered)
-State Serialization:         ✓ Passed
-✓ SUCCESS: ArtColorModel approximates the non-linear palette function reliably.
-=====================================================================================
-CVAE ART MODEL & LATENT SPACE INTERPOLATION
+    
 
 
 COND_DIM = 5
@@ -1662,32 +1380,6 @@ if __name__ == "__main__":
         print_palette(palette, label=f"Sample {idx}:")
 
      
-Starting CVAE training...
-
-Epoch   0/150: recon=0.6937, kl=0.8050, std_dev=0.0305, beta=0.0000
-Epoch  30/150: recon=0.0612, kl=2.7737, std_dev=0.1214, beta=0.0267
-Epoch  60/150: recon=0.0757, kl=2.2354, std_dev=0.1226, beta=0.0400
-Epoch  90/150: recon=0.0763, kl=2.2368, std_dev=0.1213, beta=0.0400
-Epoch 120/150: recon=0.0726, kl=2.2787, std_dev=0.1232, beta=0.0400
-
-======================================================================
-FINAL RESULTS
-======================================================================
-Final reconstruction loss: 0.0740
-Final KL loss:             2.2524
-Final color std dev:       0.1222
-Final β value:             0.0400
-======================================================================
-✓ SUCCESS: High palette diversity and active latent space.
-======================================================================
-
-Visual Sample Test (5 latent variations for exact same mood):
-Sample 1:                         [#74586f #a49767 #93ccb1 #dad0ea]
-Sample 2:                         [#61596a #986672 #b2b386 #bedbc4]
-Sample 3:                         [#655a6f #9f6974 #b8ba89 #c3e2ca]
-Sample 4:                         [#785e67 #92a06c #90c1b3 #d9cae5]
-Sample 5:                         [#705857 #75a460 #74abbf #d9acd3]
-Verifying the CVAE actually conditions on VAD
 
 
 def convert_12_to_hex_palette(vec12):
@@ -1760,36 +1452,7 @@ def verify_vad_conditioning(cvae_model):
 if __name__ == "__main__":
     cvae = CVAEArtModel(epochs=150)
     verify_vad_conditioning(cvae)
-     
-Epoch   0/150: recon=0.6937, kl=0.8050, std_dev=0.0305, beta=0.0000
-Epoch  30/150: recon=0.0612, kl=2.7737, std_dev=0.1214, beta=0.0267
-Epoch  60/150: recon=0.0757, kl=2.2354, std_dev=0.1226, beta=0.0400
-Epoch  90/150: recon=0.0763, kl=2.2368, std_dev=0.1213, beta=0.0400
-Epoch 120/150: recon=0.0726, kl=2.2787, std_dev=0.1232, beta=0.0400
-
-===========================================================================
-VAD CONDITIONING VERIFICATION
-===========================================================================
-Test 1: Opposing Moods with Identical Latent Code (z = 0)
-High Calm:                        [#7f754f #59a579 #8896ab #c8bec3]
-High Anger:                       [#4f4566 #a95e66 #a9d582 #c0e1e7]
-High Sadness:                      [#4f4b62 #97556f #b1b77a #acd7bc]
-
-Test 2: Valence Linear Sweep (-1.0 to +1.0) with Constant z
-Valence -1.00:                      [#5a5a70 #9d627a #acbd88 #b7d2cd]
-Valence -0.60:                      [#5f5b70 #9e6773 #a6c08a #b9d1d2]
-Valence -0.20:                      [#625a6f #9f6c6d #a1c18d #bbcfd5]
-Valence +0.20:                      [#645a6d #9d6f69 #9dc18d #bacdd5]
-Valence +0.60:                      [#655969 #997164 #97bf8e #b7c7d3]
-Valence +1.00:                      [#665763 #93765e #8fbd91 #b8c1d4]
-
-Test 3: Condition Sensitivity Norm ||d(out)/dc||: 0.9992
-✓ PASS: Decoder responds directly and continuously to VAD conditioning.
-===========================================================================
-ARCHIVE CLUSTERING - K-Means, unsupervised
-
-Groups a user's real logged entries by mood vector. Touches real, non-synthetic data by default.
-
+    
 
 class ArchiveClustering:
     def __init__(self, n_clusters=4, random_state=42):
@@ -1915,39 +1578,6 @@ def evaluate_archive_clustering():
 # Run evaluation
 evaluate_archive_clustering()
 
-     
-=====================================================================================
-                        ARCHIVE K-MEANS CLUSTERING EVALUATION                        
-=====================================================================================
-Total Diary Entries Clustered: 60
-Number of Clusters (k):        4
-Silhouette Score (Separation): 0.7450  (Range: [-1, 1], >0.5 indicates strong clusters)
-Davies-Bouldin Index:          0.3584  (Lower is better)
-
--------------------------------------------------------------------------------------
-Cluster Centers & Semantic Anchor Projections
--------------------------------------------------------------------------------------
-Cluster   | Assigned Name  | Centroid [V, A, C, T]            | Count 
--------------------------------------------------------------------------------------
-Cluster 0  | STRESS         | [-0.61, +0.70, 0.32, 0.77]       | 15    
-Cluster 1  | PRIDE          | [+0.62, +0.53, 0.85, 0.14]       | 15    
-Cluster 2  | CALM           | [+0.60, -0.39, 0.77, 0.10]       | 15    
-Cluster 3  | LONELINESS     | [-0.51, -0.36, 0.24, 0.33]       | 15    
-
--------------------------------------------------------------------------------------
-Edge Case & Error Handling Checks
--------------------------------------------------------------------------------------
-✓ Insufficient Entry Exception: Caught expected ValueError ('Need at least 5 entries to form 5 clusters.')
-
-=====================================================================================
-CLUSTERING DIAGNOSTIC SUMMARY
-=====================================================================================
-Cluster Distinctness:        4/4 unique semantic anchor names
-Geometric Separation:        ✓ Strong
-Error Guardrails:            ✓ Passed
-✓ SUCCESS: ArchiveClustering forms well-separated clusters and correctly maps centroids to VAD anchors.
-=====================================================================================
-LSTM TEMPORAL FORECASTER & BASELINE EVALUATION
 
 
 
@@ -2125,45 +1755,6 @@ def evaluate_mood_temporal_forecaster():
 
 # Run evaluation
 evaluate_mood_temporal_forecaster()
-     
-=====================================================================================
-                       MOOD TEMPORAL LSTM FORECASTER BENCHMARK                       
-=====================================================================================
-Initializing & training MoodTemporalForecaster (150 epochs)...
-
-1. Training & Validation Convergence
--------------------------------------------------------------------------------------
-Training Loss (MSE):   0.0090 -> 0.0012
-Validation Loss (MSE): 0.0028 -> 0.0013
-
-2. Single Sequence Illustrative Prediction
--------------------------------------------------------------------------------------
-Forecaster MSE: 0.0001 | SMA MSE: 0.0182  (single sequence -- illustrative only)
-Target VAD:     [+0.45, +0.22, +0.48]
-Predicted VAD:  [+0.44, +0.23, +0.48]
-
-3. Multi-Sequence Benchmark vs 3-Day SMA Baseline
--------------------------------------------------------------------------------------
-Held-out sequences: n=100 (random_state=999, distinct from training seed 42)
-Forecaster MSE: 0.0025 +/- 0.0018
-SMA MSE:        0.0165 +/- 0.0128
-Forecaster beat SMA on 93/100 sequences (93%)
-
-4. State Serialization Check
--------------------------------------------------------------------------------------
-Model Serialization (`get_state` / `load_state`): ✓ Passed
-
-=====================================================================================
-FORECASTER DIAGNOSTIC SUMMARY
-=====================================================================================
-LSTM Average MSE:    0.0025
-Baseline SMA MSE:    0.0165
-Benchmark Win Rate:  93.0% against SMA
-✓ SUCCESS: LSTM forecaster outperforms simple moving average on unseen sequences.
-=====================================================================================
-ART IMAGE RENDERING — Deterministic drawing
-
-Renders a palette as an actual image — deterministic drawing (PIL). Also the source of synthetic training images.
 
 
 STYLE_NAMES = ["cloud", "silk", "prism", "aurora", "ink", "nebula"]
@@ -2511,49 +2102,6 @@ def evaluate_art_rendering_pipeline():
 # Run evaluation
 evaluate_art_rendering_pipeline()
 
-     
-=====================================================================================
-                ABSTRACT ART RENDERING & ANIMATION ENGINE EVALUATION                 
-=====================================================================================
-
-1. Style Layer Generation & Determinism Check
--------------------------------------------------------------------------------------
-Style      | Output Size  | Mode   | Render Time    | Seed Determinism
--------------------------------------------------------------------------------------
-cloud      | (640, 400)   | RGB    |  63.41 ms     | ✓ Exact Match   
-silk       | (640, 400)   | RGB    | 106.66 ms     | ✓ Exact Match   
-prism      | (640, 400)   | RGB    |  41.35 ms     | ✓ Exact Match   
-aurora     | (640, 400)   | RGB    |  70.90 ms     | ✓ Exact Match   
-ink        | (640, 400)   | RGB    |  38.17 ms     | ✓ Exact Match   
-nebula     | (640, 400)   | RGB    |  41.21 ms     | ✓ Exact Match   
-
--------------------------------------------------------------------------------------
-2. Thumbnail Generator Check (`render_thumbnail`)
--------------------------------------------------------------------------------------
-Thumbnail Rendered: Size=(120, 120) | Mode=RGB | Time=3.09 ms | Status=✓ Passed
-
--------------------------------------------------------------------------------------
-3. Meditation GIF Engine (`render_meditation_gif` & Byte Buffer)
--------------------------------------------------------------------------------------
-Total Frames Rendered:      12/12
-GIF In-Memory Stream Size:  175.18 KB
-Full Animation Build Time:  517.01 ms
-Stream Status:              ✓ Valid GIF stream
-
--------------------------------------------------------------------------------------
-4. Fallback Handling
--------------------------------------------------------------------------------------
-Unrecognized Style Fallback ('non_existent_style' -> 'cloud'): ✓ Handled safely
-
-=====================================================================================
-ENGINE DIAGNOSTIC SUMMARY
-=====================================================================================
-Supported Procedural Styles: 6/6 functional & deterministic
-Canvas Dynamic Range:        6/6 non-blank canvases
-GIF Memory Serialization:    ✓ Passed
-✓ SUCCESS: Procedural canvas generation, filters, and animation pipelines operate error-free.
-=====================================================================================
-PER-USER PERSISTENCE
 
 
 USER_DIR = os.environ.get(
@@ -3096,51 +2644,6 @@ def evaluate_persistence_layer():
 # Run evaluation
 evaluate_persistence_layer()
      
-=====================================================================================
-                PERSISTENCE, CACHING & MULTI-USER STORAGE EVALUATION                 
-=====================================================================================
-
-1. User Directory Sandbox Integrity
--------------------------------------------------------------------------------------
-Target Sandbox Path: /content/user_data/test_user_713e2a0a
-Sandbox Directory Created: ✓ Passed
-
--------------------------------------------------------------------------------------
-2. Base64 Model State Serialization (`_model_state_to_b64`)
--------------------------------------------------------------------------------------
-Base64 String Length: 260 chars
-State Round-Trip Fidelity: ✓ Exact Match
-
--------------------------------------------------------------------------------------
-3. Local Model Cache Persistence (`_load_pickle` / `_save_pickle`)
--------------------------------------------------------------------------------------
-Pickle File Exists on Disk: True
-Restored Object Integrity:  ✓ Passed
-
--------------------------------------------------------------------------------------
-4. Diary Entry Logging, UUID Tracking & Patch Updates
--------------------------------------------------------------------------------------
-Entry Logged (UUID: 6c6bcfc4...): ✓ Saved
-Cloud Storage Status (append):        [local_only]
-Entry Correction Applied:              ✓ Verified in history
-Cloud Storage Status (update):        [None]
-
--------------------------------------------------------------------------------------
-5. Local SQLite Database Schema & Migration Check (`_get_db`)
--------------------------------------------------------------------------------------
-SQLite DB Created at:       /content/user_data/analysis.db
-Columns Verified (15 total): ✓ Passed (including corrected_category)
-
-=====================================================================================
-PERSISTENCE LAYER SUMMARY
-=====================================================================================
-Base64 Model Compression:    ✓ Functional
-Local Storage Fallbacks:     ✓ Functional
-Cloud Integration Handling:  ✓ Dual-mode active (local JSON fallback supported)
-✓ SUCCESS: Persistence layer handles user sandboxing, entry updating, and state caching.
-=====================================================================================
-GENERATIVE PIXEL-LEVEL CVAE IMAGE MODEL
-
 
 IMG_SIZE = 48
 IMG_VAD_DIM = 5
@@ -3633,73 +3136,6 @@ def evaluate_image_model_style_diversity(
 # Run evaluation
 evaluate_image_model_style_diversity()
 
-     
-=====================================================================================
-            CONVOLUTIONAL IMAGE CVAE ARCHITECTURE & GENERATION EVALUATION            
-=====================================================================================
-
-1. Architecture Forward Pass & Shape Diagnostics
--------------------------------------------------------------------------------------
-Condition Vector Dimension:      11 (5 VAD + 6 Style One-Hot)
-Latent Bottleneck Dimension:     16
-Input / Reconstruction Shape:    [4, 3, 48, 48] -> [4, 3, 48, 48] ✓
-Latent mu / logvar Tensor Shape: [4, 16] ✓
-Loss Pipeline Sanity:            Total=1.2363 (Recon=1.2363, KL=0.0028) ✓
-
--------------------------------------------------------------------------------------
-2. Model Training & Synthetic Image Dataset Initialization
--------------------------------------------------------------------------------------
-Dataset Size:           48 images
-Image Tensor Dataset:   [48, 3, 48, 48]
-Condition Tensor:       [48, 11]
-Training Execution:     15 epochs completed in 3.45s
-
--------------------------------------------------------------------------------------
-3. Visual Output Sampling Across Styles (`sample`)
--------------------------------------------------------------------------------------
-Style      | Output Size  | Mode   | Channel Min/Max    | Canvas Std Dev
--------------------------------------------------------------------------------------
-cloud      | (120, 120)   | RGB    | [ 81, 127]          |   6.76         ✓
-silk       | (120, 120)   | RGB    | [ 74, 129]          |   7.39         ✓
-prism      | (120, 120)   | RGB    | [ 70, 130]          |   8.27         ✓
-aurora     | (120, 120)   | RGB    | [ 70, 128]          |   8.81         ✓
-ink        | (120, 120)   | RGB    | [ 70, 128]          |   8.06         ✓
-nebula     | (120, 120)   | RGB    | [ 70, 130]          |   7.79         ✓
-
--------------------------------------------------------------------------------------
-4. Latent Space Manifold Orbit (`sample_animation`)
--------------------------------------------------------------------------------------
-Generated Frames:       16/16
-Generation Latency:     98.02 ms (6.13 ms/frame)
-Smooth Orbit Status:    ✓ Passed
-
--------------------------------------------------------------------------------------
-5. Online Image Adaptation (`fine_tune`) & State Persistence
--------------------------------------------------------------------------------------
-/tmp/ipykernel_1924/2392605801.py:160: DeprecationWarning: 'mode' parameter is deprecated and will be removed in Pillow 13 (2026-10-15)
-  img = Image.fromarray(arr, "RGB")
-Fine-Tuning Example Append: 48 -> 49 ✓
-Model State Serialization:  ✓ Restored Successfully
-
-=====================================================================================
-IMAGE CVAE SYSTEM SUMMARY
-=====================================================================================
-Forward/Backward Pipeline:   ✓ Passed
-Multi-Style Rendering:       ✓ Passed (6/6 styles)
-Manifold Animation:          ✓ Passed
-Online Learning & Saving:    ✓ Passed
-✓ SUCCESS: GenerativeArtImageModel executes tensor ops, multi-style generation, and persistence without errors.
-=====================================================================================
-Data: {'synthetic_examples': 480, 'real_examples': 0, 'total_training_examples': 480, 'fraction_real': 0.0, 'styles_trained_on': ['cloud', 'silk', 'prism', 'aurora', 'ink', 'nebula']}
-
-Pairwise mean pixel difference across styles (0 = identical):
-  cloud  vs silk    : 17.5
-  cloud  vs prism   : 17.6
-  cloud  vs aurora  : 23.4
-  cloud  vs ink     : 17.9
-  cloud  vs nebula  : 18.1
-UNIFIED DEPENDENT PIPELINE & ABLATION STUDY
-
 
 _CVAE_SINGLETON = None
 _FORECASTER_SINGLETON = None
@@ -3940,108 +3376,5 @@ def evaluate_unified_pipeline():
 
 # Run evaluation
 evaluate_unified_pipeline()
-     
-=====================================================================================
-               UNIFIED GENERATIVE PIPELINE & ABLATION STUDY BENCHMARK                
-=====================================================================================
-
-1. End-to-End Pipeline Forward Pass (Text -> VAD -> LSTM -> CVAE)
--------------------------------------------------------------------------------------
-Epoch   0/40: recon=0.6937, kl=0.8050, std_dev=0.0305, beta=0.0000
-Epoch  30/40: recon=0.0811, kl=2.1773, std_dev=0.1165, beta=0.0400
-Input Diary Text:       "Work was intense and fast-paced today, but I managed to stay completely organized and grounded."
-Extracted Topic/Mood:   [STRESS]
-Assigned Visual Style:  <SILK>
-Target VAD Coordinates: V: +0.59 | A: +0.36 | D: +0.54
-Target Clarity / Turb:  Clarity: 0.46 | Turbulence: 0.18
-Pipeline Engine Used:   CVAE + Optimised Preference
-Total Execution Time:   35114.46 ms
-Generated Aesthetic Palette:                          [#2a2a28 #4c5234 #717b90 #c88da0]
-
--------------------------------------------------------------------------------------
-2. Ablation Analysis: Component Variance & Engine Fallbacks
--------------------------------------------------------------------------------------
-1. Full Pipeline (CVAE + LSTM + Opt)
-  • Engine: CVAE + Optimised Preference
-  • Palette:                                          [#131019 #522e14 #978e54 #d1aae4]
-2. W/o CVAE (Static Rules Fallback)
-  • Engine: Rule-based Fallback (No CVAE)
-  • Palette:                                          [#0b110b #412036 #964fc2 #d2bcd4]
-3. W/o Palette Optimiser
-  • Engine: Raw CVAE Sample
-  • Palette:                                          [#1d1a1f #483d49 #e03b98 #f8dec3]
-4. W/o LSTM Temporal Forecaster
-  • Engine: CVAE + Optimised Preference
-  • Palette:                                          [#10100e #275922 #df20c2 #f8b3c2]
-
--------------------------------------------------------------------------------------
-3. Model Singleton Caching & Custom Instance Injection
--------------------------------------------------------------------------------------
-CVAE Model Singleton Cached:     ✓ Passed
-Forecaster Singleton Cached:     ✓ Passed
-
-============================================================
-PIPELINE ABLATION TESTING
-============================================================
-
-=====================================================================================
-UNIFIED PIPELINE DIAGNOSTIC SUMMARY
-=====================================================================================
-Component Chaining:         ✓ Text -> Classifier -> VAD -> Forecaster -> CVAE
-Ablation Divergence:        ✓ Distinct modes operational
-Model Memory Management:    ✓ Lazy singletons active
-Matplotlib Visualization:   ✓ Rendered
-✓ SUCCESS: Unified pipeline executes smoothly with verified component decoupling.
-=====================================================================================
-STREAMLIT UI
-
 
 pip install streamlit
-     
-Collecting streamlit
-  Downloading streamlit-1.62.0-py3-none-any.whl.metadata (10 kB)
-Requirement already satisfied: altair!=5.4.0,!=5.4.1,<7,>=5.0.0 in /usr/local/lib/python3.13/dist-packages (from streamlit) (5.5.0)
-Requirement already satisfied: blinker<2,>=1.5.0 in /usr/local/lib/python3.13/dist-packages (from streamlit) (1.9.0)
-Requirement already satisfied: click<9,>=7.0 in /usr/local/lib/python3.13/dist-packages (from streamlit) (8.4.2)
-Requirement already satisfied: numpy<3,>=1.23 in /usr/local/lib/python3.13/dist-packages (from streamlit) (2.1.3)
-Requirement already satisfied: packaging>=20 in /usr/local/lib/python3.13/dist-packages (from streamlit) (26.3)
-Requirement already satisfied: pandas<4,>=1.4.0 in /usr/local/lib/python3.13/dist-packages (from streamlit) (2.2.3)
-Requirement already satisfied: pillow<13,>=7.1.0 in /usr/local/lib/python3.13/dist-packages (from streamlit) (11.3.0)
-Collecting pydeck<1,>=0.8.0b4 (from streamlit)
-  Downloading pydeck-0.9.3-py2.py3-none-any.whl.metadata (4.2 kB)
-Requirement already satisfied: protobuf<8,>=5.26.1 in /usr/local/lib/python3.13/dist-packages (from streamlit) (5.29.6)
-Requirement already satisfied: pyarrow!=25.0.0,<26,>=7.0 in /usr/local/lib/python3.13/dist-packages (from streamlit) (18.1.0)
-Requirement already satisfied: requests<3,>=2.27 in /usr/local/lib/python3.13/dist-packages (from streamlit) (2.32.4)
-Requirement already satisfied: toml<2,>=0.10.1 in /usr/local/lib/python3.13/dist-packages (from streamlit) (0.10.2)
-Requirement already satisfied: typing-extensions<5,>=4.10.0 in /usr/local/lib/python3.13/dist-packages (from streamlit) (4.16.0)
-Requirement already satisfied: starlette<2,>=0.46.0 in /usr/local/lib/python3.13/dist-packages (from streamlit) (1.6.0)
-Requirement already satisfied: uvicorn<1,>=0.30.0 in /usr/local/lib/python3.13/dist-packages (from streamlit) (0.52.3)
-Requirement already satisfied: httptools<1,>=0.6.3 in /usr/local/lib/python3.13/dist-packages (from streamlit) (0.8.0)
-Requirement already satisfied: anyio<5,>=4.0.0 in /usr/local/lib/python3.13/dist-packages (from streamlit) (4.14.2)
-Requirement already satisfied: python-multipart<1,>=0.0.10 in /usr/local/lib/python3.13/dist-packages (from streamlit) (0.0.32)
-Requirement already satisfied: websockets<17,>=12.0.0 in /usr/local/lib/python3.13/dist-packages (from streamlit) (15.0.1)
-Requirement already satisfied: itsdangerous<3,>=2.1.2 in /usr/local/lib/python3.13/dist-packages (from streamlit) (2.2.0)
-Requirement already satisfied: watchdog<7,>=2.1.5 in /usr/local/lib/python3.13/dist-packages (from streamlit) (6.0.0)
-Requirement already satisfied: jinja2 in /usr/local/lib/python3.13/dist-packages (from altair!=5.4.0,!=5.4.1,<7,>=5.0.0->streamlit) (3.1.6)
-Requirement already satisfied: jsonschema>=3.0 in /usr/local/lib/python3.13/dist-packages (from altair!=5.4.0,!=5.4.1,<7,>=5.0.0->streamlit) (4.26.0)
-Requirement already satisfied: narwhals>=1.14.2 in /usr/local/lib/python3.13/dist-packages (from altair!=5.4.0,!=5.4.1,<7,>=5.0.0->streamlit) (2.24.0)
-Requirement already satisfied: idna>=2.8 in /usr/local/lib/python3.13/dist-packages (from anyio<5,>=4.0.0->streamlit) (3.18)
-Requirement already satisfied: python-dateutil>=2.8.2 in /usr/local/lib/python3.13/dist-packages (from pandas<4,>=1.4.0->streamlit) (2.9.0.post0)
-Requirement already satisfied: pytz>=2020.1 in /usr/local/lib/python3.13/dist-packages (from pandas<4,>=1.4.0->streamlit) (2025.2)
-Requirement already satisfied: tzdata>=2022.7 in /usr/local/lib/python3.13/dist-packages (from pandas<4,>=1.4.0->streamlit) (2026.3)
-Requirement already satisfied: charset_normalizer<4,>=2 in /usr/local/lib/python3.13/dist-packages (from requests<3,>=2.27->streamlit) (3.4.9)
-Requirement already satisfied: urllib3<3,>=1.21.1 in /usr/local/lib/python3.13/dist-packages (from requests<3,>=2.27->streamlit) (2.5.0)
-Requirement already satisfied: certifi>=2017.4.17 in /usr/local/lib/python3.13/dist-packages (from requests<3,>=2.27->streamlit) (2026.7.22)
-Requirement already satisfied: h11>=0.8 in /usr/local/lib/python3.13/dist-packages (from uvicorn<1,>=0.30.0->streamlit) (0.16.0)
-Requirement already satisfied: MarkupSafe>=2.0 in /usr/local/lib/python3.13/dist-packages (from jinja2->altair!=5.4.0,!=5.4.1,<7,>=5.0.0->streamlit) (3.0.3)
-Requirement already satisfied: attrs>=22.2.0 in /usr/local/lib/python3.13/dist-packages (from jsonschema>=3.0->altair!=5.4.0,!=5.4.1,<7,>=5.0.0->streamlit) (26.1.0)
-Requirement already satisfied: jsonschema-specifications>=2023.03.6 in /usr/local/lib/python3.13/dist-packages (from jsonschema>=3.0->altair!=5.4.0,!=5.4.1,<7,>=5.0.0->streamlit) (2025.9.1)
-Requirement already satisfied: referencing>=0.28.4 in /usr/local/lib/python3.13/dist-packages (from jsonschema>=3.0->altair!=5.4.0,!=5.4.1,<7,>=5.0.0->streamlit) (0.37.0)
-Requirement already satisfied: rpds-py>=0.25.0 in /usr/local/lib/python3.13/dist-packages (from jsonschema>=3.0->altair!=5.4.0,!=5.4.1,<7,>=5.0.0->streamlit) (2026.6.3)
-Requirement already satisfied: six>=1.5 in /usr/local/lib/python3.13/dist-packages (from python-dateutil>=2.8.2->pandas<4,>=1.4.0->streamlit) (1.17.0)
-Downloading streamlit-1.62.0-py3-none-any.whl (10.5 MB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10.5/10.5 MB 48.5 MB/s eta 0:00:00
-Downloading pydeck-0.9.3-py2.py3-none-any.whl (11.4 MB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 11.4/11.4 MB 43.3 MB/s eta 0:00:00
-Installing collected packages: pydeck, streamlit
-Successfully installed pydeck-0.9.3 streamlit-1.62.0
