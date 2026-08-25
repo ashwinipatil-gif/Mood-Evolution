@@ -498,13 +498,11 @@ class DiaryMoodClassifier:
         proba = self.model.predict_proba(X)[0]
         classes = [str(c).strip().lower() for c in self.model.classes_]
         raw = sum(
-            p * CATEGORY_ANCHORS_VAD.get(cat, (0.0, 0.0, 0.0))[0] 
+            p * CATEGORY_ANCHORS_VAD.get(cat, (0.0, 0.0, 0.0))[0]
             for cat, p in zip(classes, proba)
         )
-        return float(raw - getattr(self, "_baseline_valence", 0.0))
-
-    def training_set_size(self):
-        return len(self.texts)
+        base = getattr(self, "_baseline_valence", 0.0)
+        return float(raw - base)
 
 
 def _random_theme_scores(rng):
