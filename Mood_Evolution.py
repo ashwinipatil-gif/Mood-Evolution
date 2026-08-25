@@ -491,7 +491,7 @@ class DiaryMoodClassifier:
         mapped["posterior"] = posterior
         return mapped
 
-  def word_score(self, word):
+def word_score(self, word):
         X = self.vectorizer.transform([word])
         if X.nnz == 0:
             return 0.0
