@@ -2135,4 +2135,5 @@ if __name__ == "__main__":
         run_streamlit_app()
     else:
         print("Running in CLI/Notebook mode. Starting diagnostic validation...")
-        evaluate_emotional_mapper(EmotionalMapper, CATEGORY_ANCHORS_VAD, READING_MAP)
+        mapper_instance = EmotionalMapper()
+        evaluate_emotional_mapper(mapper_instance, CATEGORY_ANCHORS_VAD, READING_MAP)
