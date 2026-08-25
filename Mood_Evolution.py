@@ -491,7 +491,7 @@ class DiaryMoodClassifier:
         mapped["posterior"] = posterior
         return mapped
 
-    def word_score(self, word):
+  def word_score(self, word):
         X = self.vectorizer.transform([word])
         if X.nnz == 0:
             return 0.0
@@ -503,7 +503,6 @@ class DiaryMoodClassifier:
         )
         base = getattr(self, "_baseline_valence", 0.0)
         return float(raw - base)
-
 
 def _random_theme_scores(rng):
     scores = {c: 0.0 for c in CATEGORIES}
