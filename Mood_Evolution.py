@@ -2118,13 +2118,13 @@ def run_streamlit_app():
             ax.set_facecolor("#14131a")
             ax.plot(days, valences, "o-", label="Logged Valence", color="#d9b673", linewidth=2)
             ax.plot([len(days)], [next_vad[0]], "o--", label="Forecasted Next Day", color="#b9a3e0", linewidth=2)
-            ax.axhline(0, color="rgba(217,182,115,0.2)", linestyle="--", linewidth=1)
+            ax.axhline(0, color="#d9b673", alpha=0.2, linestyle="--", linewidth=1)
             ax.tick_params(colors="#b8b0a4", labelsize=8)
             for spine in ax.spines.values():
-                spine.set_color("rgba(217,182,115,0.15)")
-            ax.legend(facecolor="#14131a", edgecolor="rgba(217,182,115,0.2)", labelcolor="#f2ede4", fontsize=8)
-            ax.set_title("VAD Sequence Momentum & LSTM Forecast", color="#f2ede4", fontsize=10, fontfamily="serif")
-            st.pyplot(fig)
+    spine.set_color("#d9b673")
+    spine.set_alpha(0.15)
+ax.legend(facecolor="#14131a", edgecolor="#d9b673", labelcolor="#f2ede4", fontsize=8)
+            
 
 
 # ==============================================================================
