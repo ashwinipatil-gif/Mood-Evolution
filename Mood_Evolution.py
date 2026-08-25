@@ -37,6 +37,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import davies_bouldin_score, silhouette_score
 import io
 import time
+from sklearn.linear_model import LogisticRegression
 
 
 try:
