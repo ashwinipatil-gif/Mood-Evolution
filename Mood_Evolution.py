@@ -19,6 +19,7 @@ import hashlib
 import datetime as dt
 from datetime import datetime
 from pathlib import Path
+from helper_module import evaluate_emotional_mapper, CATEGORY_ANCHORS_VAD
 
 import numpy as np
 import pandas as pd
