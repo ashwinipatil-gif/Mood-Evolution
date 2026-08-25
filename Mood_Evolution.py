@@ -496,6 +496,10 @@ class DiaryMoodClassifier:
         classes = list(self.model.classes_)
         raw = sum(p * CATEGORY_ANCHORS_VAD[cat][0] for cat, p in zip(classes, proba))
         return float(raw - self._baseline_valence)
+        # In word_score() around line 497: 
+        raw = sum(p * CATEGORY_ANCHORS_VAD.get(cat, [0.0, 0.0, 0.0])[0] 
+        for cat, p in zip(classes, probs)
+)
 
     def training_set_size(self):
         return len(self.texts)
