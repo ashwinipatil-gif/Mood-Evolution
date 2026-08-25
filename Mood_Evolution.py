@@ -493,10 +493,7 @@ class DiaryMoodClassifier:
         if X.nnz == 0:
             return 0.0
         proba = self.model.predict_proba(X)[0]
-        classes = list(self.model.classes_)
-        raw = sum(p * CATEGORY_ANCHORS_VAD[cat][0] for cat, p in zip(classes, proba))
-        return float(raw - self._baseline_valence)
-        # In word_score() around line 497: 
+        classes = list(self.model.classes_) 
         raw = sum(p * CATEGORY_ANCHORS_VAD.get(cat, [0.0, 0.0, 0.0])[0] 
         for cat, p in zip(classes, probs)
 )
