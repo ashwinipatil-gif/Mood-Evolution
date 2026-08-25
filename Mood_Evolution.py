@@ -3377,3 +3377,17 @@ def evaluate_unified_pipeline():
 
 # Run evaluation
 evaluate_unified_pipeline()
+
+# In Mood_Evolution.py on GitHub:
+
+@st.cache_resource(show_spinner="Loading models...")
+def get_cached_models(user_id):
+    clf = load_diary_classifier(user_id)
+    cvae = load_cvae_model(user_id)
+    forecaster = _get_forecaster()
+    img_model = load_image_art_model(user_id)
+    return clf, cvae, forecaster, img_model
+
+# Only run the app when launched
+if __name__ == "__main__":
+    run_streamlit_app()
