@@ -1,54 +1,58 @@
+# ==============================================================================
+# 0. IMPORTS & DEPENDENCIES
+# ==============================================================================
 import os
+import io
+import re
+import csv
 import json
-import sqlite3
-import pickle
-import base64
-import uuid
-from datetime import datetime
-import datetime as dt
-import hashlib
+import time
 import math
+import uuid
+import base64
 import random
-import itertools
+import pickle
+import shutil
+import sqlite3
 import colorsys
+import hashlib
+import datetime as dt
+from datetime import datetime
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 from PIL import Image, ImageDraw, ImageFilter
-from sklearn.feature_extraction.text import CountVectorizer
+import matplotlib.pyplot as plt
+
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.naive_bayes import MultinomialNB
-from sklearn.linear_model import LinearRegression
 from sklearn.cluster import KMeans
+from sklearn.model_selection import LeaveOneOut
+from sklearn.metrics import (
+    accuracy_score,
+    mean_squared_error,
+    r2_score,
+    silhouette_score,
+    davies_bouldin_score,
+)
+from scipy.spatial.distance import pdist, squareform
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
-import pandas as pd
-import csv
-from pathlib import Path
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import LeaveOneOut
-from sklearn.metrics import accuracy_score
-from scipy.spatial.distance import pdist, squareform
-from sklearn.pipeline import make_pipeline
-from sklearn.naive_bayes import ComplementNB
-from sklearn.pipeline import make_pipeline
-from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.cluster import KMeans
-from sklearn.metrics import davies_bouldin_score, silhouette_score
-import io
-import time
-from sklearn.linear_model import LogisticRegression
-
 
 try:
     import streamlit as st
 except ImportError:
     st = None
-     
-# ==============================================================================
-# 1. GEOMETRICALLY SEPARATED VAD ANCHORS
-# ==============================================================================
 
+
+# ==============================================================================
+# 1. CONSTANTS, VAD ANCHORS & SEED DATASETS
+# ==============================================================================
 CATEGORY_ANCHORS_VAD = {
     "stress":      (-0.55,  0.75, -0.30),
     "anger":       (-0.75,  0.90,  0.50),
@@ -75,9 +79,36 @@ CATEGORY_ANCHORS_VAD = {
     "nostalgia":   ( 0.15, -0.15, -0.05),
 }
 
-# ==============================================================================
-# 2. SEED EXAMPLES (Zero cross-class vocabulary overlap)
-# ==============================================================================
+CATEGORIES = list(CATEGORY_ANCHORS_VAD.keys())
+
+_READING_MAP = {
+    "stress": "A charged, restless current",
+    "anger": "Heat rising to the surface",
+    "calm": "Settling into quiet ground",
+    "clarity": "A clearing — light finding form",
+    "focus": "A sharp, concentrated beam",
+    "sad": "A muted, inward turn",
+    "fog": "Lost in the shadows of the head",
+    "heavy": "Weight, slowly loosening",
+    "hope": "Something fragile lifting",
+    "joy": "A bright, effortless opening",
+    "light": "Touched by gentle gold",
+    "fear": "A sudden tremor underfoot",
+    "surprise": "An unexpected shift in the air",
+    "disgust": "A sharp, recoiling edge",
+    "guilt": "Looking backward through shadow",
+    "pride": "Standing taller, quietly certain",
+    "boredom": "A flat, unmoving stillness",
+    "love": "Warmth filling all the corners",
+    "gratitude": "Noticing the ground that holds you",
+    "loneliness": "A quiet, hollow expanse",
+    "excitement": "A spark catching into flame",
+    "frustration": "Pressing against closed doors",
+    "nostalgia": "A faded photograph, half-smiling",
+}
+READING_MAP = _READING_MAP
+
+STYLE_NAMES = ["cloud", "silk", "prism", "aurora", "ink", "nebula"]
 
 SEED_EXAMPLES = {
     "stress": [
@@ -220,79 +251,10 @@ SEED_EXAMPLES = {
     ],
 }
 
+
 # ==============================================================================
-# 3. EVALUATION
+# 2. EMOTIONAL MAPPER & CURATED PALETTE SYSTEM
 # ==============================================================================
-
-print("=" * 75)
-print("1. VAD ANCHOR GEOMETRY EVALUATION")
-print("=" * 75)
-
-categories = list(CATEGORY_ANCHORS_VAD.keys())
-coords = np.array(list(CATEGORY_ANCHORS_VAD.values()))
-dist_matrix = squareform(pdist(coords, metric='euclidean'))
-np.fill_diagonal(dist_matrix, np.inf)
-
-min_dist_idx = np.unravel_index(np.argmin(dist_matrix), dist_matrix.shape)
-c1, c2 = categories[min_dist_idx[0]], categories[min_dist_idx[1]]
-min_dist = dist_matrix[min_dist_idx]
-
-print(f"Total Emotion Categories: {len(categories)}")
-print(f"Average Distance Between Anchors: {np.mean(dist_matrix[dist_matrix != np.inf]):.3f}")
-print(f"Closest Pair: '{c1}' <-> '{c2}' (Distance: {min_dist:.3f})")
-
-if min_dist >= 0.15:
-    print("✓ SUCCESS: All VAD anchors are well-separated in 3D emotional space.")
-else:
-    print("✗ WARNING: Anchors are too close to each other.")
-
-print("\n" + "=" * 75)
-print("2. SEED EXAMPLES CLASSIFIER EVALUATION (LOOCV)")
-print("=" * 75)
-
-texts, labels = [], []
-for cat, examples in SEED_EXAMPLES.items():
-    for text in examples:
-        texts.append(text)
-        labels.append(cat)
-
-y = np.array(labels)
-loo = LeaveOneOut()
-y_true, y_pred = [], []
-
-for train_ix, test_ix in loo.split(texts):
-    train_texts = [texts[i] for i in train_ix]
-    test_texts = [texts[i] for i in test_ix]
-
-    vec = TfidfVectorizer(
-        analyzer="char_wb",
-        ngram_range=(3, 5),
-        sublinear_tf=True
-    )
-    X_train = vec.fit_transform(train_texts)
-    X_test = vec.transform(test_texts)
-
-    clf = LogisticRegression(C=10.0, max_iter=1000, random_state=42)
-    clf.fit(X_train, y[train_ix])
-
-    pred = clf.predict(X_test)
-    y_true.append(y[test_ix][0])
-    y_pred.append(pred[0])
-
-acc = accuracy_score(y_true, y_pred)
-correct_count = sum(np.array(y_true) == np.array(y_pred))
-total_count = len(y_true)
-
-print(f"Leave-One-Out Accuracy: {acc * 100:.1f}% ({correct_count}/{total_count} correct)")
-
-if acc >= 0.90:
-    print("✓ SUCCESS: Seed examples achieve clear class separation with calibrated probabilities.")
-elif acc >= 0.80:
-    print("⚠ PARTIAL: Moderate separation between emotion classes.")
-else:
-    print("✗ PROBLEM: High misclassification rate.")
-print("=" * 75)
-
 class EmotionalMapper:
     def __init__(self, category_anchors=None):
         self.anchors = category_anchors or CATEGORY_ANCHORS_VAD
@@ -322,12 +284,14 @@ class EmotionalMapper:
         calm_w = posterior.get("calm", 0) + 0.4 * posterior.get("sad", 0)
         prism_w = posterior.get("clarity", 0) + posterior.get("focus", 0) + 0.6 * posterior.get("light", 0)
         silk_w = posterior.get("heavy", 0) + posterior.get("fog", 0) + posterior.get("stress", 0) + 0.1
+        
         if calm_w >= prism_w and calm_w >= silk_w and calm_w > 0.25:
             style = "cloud"
         elif prism_w >= silk_w and prism_w > 0.3:
             style = "prism"
         else:
             style = "silk"
+
         if arousal < -0.25 and valence >= -0.1:
             style = "cloud"
 
@@ -348,97 +312,7 @@ class EmotionalMapper:
             "reading": reading,
             "themes": themes,
         }
-def evaluate_emotional_mapper(mapper_cls, anchors, reading_map):
-    print("=" * 80)
-    print(f"{'EMOTIONAL MAPPER BEHAVIOR & BOUNDS EVALUATION':^80}")
-    print("=" * 80)
 
-    mapper = mapper_cls(anchors)
-    all_categories = list(anchors.keys())
-
-    # --------------------------------------------------------------------------
-    # TEST 1: SINGLE-EMOTION ANCHOR FIDELITY & BOUNDS
-    # --------------------------------------------------------------------------
-    print("\n1. Single-Category Boundary & Alignment Check (All 23 Emotions)")
-    print("-" * 80)
-    print(f"{'Category':<14} | {'VAD Expected':<22} | {'VAD Output':<22} | {'Style':<7} | {'Clarity/Turb':<12}")
-    print("-" * 80)
-
-    bound_violations = 0
-    anchor_mismatches = 0
-
-    for cat in all_categories:
-        # One-hot posterior
-        post = {c: (1.0 if c == cat else 0.0) for c in all_categories}
-        res = mapper.map(post)
-
-        exp_v, exp_a, exp_d = anchors[cat]
-        out_v, out_a, out_d = res["valence"], res["arousal"], res["dominance"]
-
-        # Check VAD match
-        if not (np.isclose(exp_v, out_v) and np.isclose(exp_a, out_a) and np.isclose(exp_d, out_d)):
-            anchor_mismatches += 1
-
-        # Check bounds: Clarity & Turbulence must be [0, 1]
-        if not (0.0 <= res["clarity"] <= 1.0 and 0.0 <= res["turbulence"] <= 1.0):
-            bound_violations += 1
-
-        exp_str = f"({exp_v:+.2f}, {exp_a:+.2f}, {exp_d:+.2f})"
-        out_str = f"({out_v:+.2f}, {out_a:+.2f}, {out_d:+.2f})"
-        metrics_str = f"{res['clarity']:.2f} / {res['turbulence']:.2f}"
-
-        print(f"{cat:<14} | {exp_str:<22} | {out_str:<22} | {res['style']:<7} | {metrics_str:<12}")
-
-    # --------------------------------------------------------------------------
-    # TEST 2: COMPLEX EMOTION BLENDS & EDGE CASES
-    # --------------------------------------------------------------------------
-    print("\n2. Complex Mood Blends & Dynamic Style Routing")
-    print("-" * 80)
-
-    test_scenarios = [
-        ("High Stress Burnout", {"stress": 0.60, "heavy": 0.30, "fog": 0.10}),
-        ("Quiet Meditative Peace", {"calm": 0.70, "gratitude": 0.20, "sad": 0.10}),
-        ("Sharp Analytical Flow", {"clarity": 0.50, "focus": 0.40, "light": 0.10}),
-        ("Bittersweet Longing", {"nostalgia": 0.50, "sad": 0.30, "love": 0.20}),
-        ("Turbulent Rage & Chaos", {"anger": 0.60, "frustration": 0.30, "stress": 0.10}),
-        ("Equally Mixed Ambivalence", {c: 1.0 / len(all_categories) for c in all_categories})
-    ]
-
-    for name, post in test_scenarios:
-        # Normalize posterior sum to 1.0
-        tot = sum(post.values())
-        norm_post = {c: post.get(c, 0.0) / tot for c in all_categories}
-
-        res = mapper.map(norm_post)
-        vad_str = f"V: {res['valence']:+.2f}, A: {res['arousal']:+.2f}, D: {res['dominance']:+.2f}"
-
-        print(f"Scenario: {name}")
-        print(f"  • Top Emotion:  [{res['top_category'].upper()}]")
-        print(f"  • Coordinates:  {vad_str}")
-        print(f"  • Clarity/Turb: Clarity={res['clarity']:.2f} | Turbulence={res['turbulence']:.2f}")
-        print(f"  • Assigned Style: <{res['style'].upper()}>")
-        print(f"  • Poetic Reading: \"{res['reading']}\"")
-        print()
-
-    # --------------------------------------------------------------------------
-    # SUMMARY VERDICT
-    # --------------------------------------------------------------------------
-    print("=" * 80)
-    print("FINAL MAPPER DIAGNOSTIC")
-    print("=" * 80)
-    print(f"Anchor Accuracy:        {'100% Match' if anchor_mismatches == 0 else f'{anchor_mismatches} Mismatches'}")
-    print(f"Metric Boundary Checks: {'0 Violations' if bound_violations == 0 else f'{bound_violations} Out of Bounds'}")
-
-    if anchor_mismatches == 0 and bound_violations == 0:
-        print("✓ SUCCESS: EmotionalMapper produces bounded, linearly sound VAD and style mappings.")
-    else:
-        print("✗ PROBLEM: Detected out-of-bound variables or anchor transformation mismatch.")
-    print("=" * 80)
-
-
-# Run evaluation
-evaluate_emotional_mapper(EmotionalMapper, CATEGORY_ANCHORS_VAD, READING_MAP)
-    
 
 def hsl_to_rgb01(h, s, l):
     h = (h % 360) / 360.0
@@ -489,7 +363,7 @@ def deterministic_palette(valence, energy01, clarity, turbulence, theme_scores):
     elif T.get("frustration", 0) > 0.4:
         hue, accent_hue, sat = 0, 350, 0.7
     elif T.get("nostalgia", 0) > 0.4:
-        hue, accent_hue, sat = 280, 200, 0.3  # low saturation -- faded, sepia-toned
+        hue, accent_hue, sat = 280, 200, 0.3
     else:
         hue, accent_hue, sat = 270, 320, 0.45
 
@@ -519,7 +393,36 @@ PRESET_DEFS = {
     "sorrow":  dict(label="Sorrow",  theme_scores={"sad": 0.9},                 valence=-0.6, energy01=0.2,  clarity=0.35, turbulence=0.2),
 }
 
-PRESET_TO_CATEGORY = {"calm": "calm", "clarity": "clarity", "warmth": "hope", "fog": "fog", "stress": "stress", "sorrow": "sad"}
+CATEGORY_CORRECTION_DEFS = {
+    "stress":      dict(label="Stress",      theme_scores={"stress": 1.1, "anger": 0.3},   valence=-0.5,  energy01=0.85,  clarity=0.3,  turbulence=0.75),
+    "anger":       dict(label="Anger",       theme_scores={"anger": 0.9},                  valence=-0.7,  energy01=0.9,   clarity=0.3,  turbulence=0.85),
+    "calm":        dict(label="Calm",        theme_scores={"calm": 1.2},                   valence=0.6,   energy01=0.25,  clarity=0.5,  turbulence=0.05),
+    "clarity":     dict(label="Clarity",     theme_scores={"clarity": 1, "light": 0.6},    valence=0.6,   energy01=0.5,   clarity=0.85, turbulence=0.1),
+    "focus":       dict(label="Focus",       theme_scores={"focus": 0.7},                  valence=0.55,  energy01=0.7,   clarity=0.7,  turbulence=0.15),
+    "sad":         dict(label="Sorrow",      theme_scores={"sad": 0.9},                    valence=-0.6,  energy01=0.2,   clarity=0.35, turbulence=0.2),
+    "fog":         dict(label="Fog",         theme_scores={"fog": 0.8, "heavy": 0.3},      valence=-0.3,  energy01=0.3,   clarity=0.25, turbulence=0.3),
+    "heavy":       dict(label="Heavy",       theme_scores={"heavy": 0.7, "fog": 0.2},      valence=-0.45, energy01=0.35,  clarity=0.3,  turbulence=0.25),
+    "hope":        dict(label="Warmth",      theme_scores={"hope": 0.8, "joy": 0.4},       valence=0.7,   energy01=0.5,   clarity=0.6,  turbulence=0.15),
+    "joy":         dict(label="Joy",         theme_scores={"joy": 0.9, "hope": 0.2},       valence=0.78,  energy01=0.8,   clarity=0.6,  turbulence=0.1),
+    "light":       dict(label="Light",       theme_scores={"light": 0.7, "clarity": 0.2},  valence=0.63,  energy01=0.675, clarity=0.75, turbulence=0.05),
+    "fear":        dict(label="Fear",        theme_scores={"fear": 0.9},                   valence=-0.64, energy01=0.81,  clarity=0.25, turbulence=0.75),
+    "surprise":    dict(label="Surprise",    theme_scores={"surprise": 0.8},               valence=0.20,  energy01=0.90,  clarity=0.4,  turbulence=0.55),
+    "disgust":     dict(label="Disgust",     theme_scores={"disgust": 0.8},                valence=-0.60, energy01=0.675, clarity=0.35, turbulence=0.4),
+    "guilt":       dict(label="Guilt",       theme_scores={"guilt": 0.7},                  valence=-0.55, energy01=0.55,  clarity=0.3,  turbulence=0.45),
+    "pride":       dict(label="Pride",       theme_scores={"pride": 0.8},                  valence=0.65,  energy01=0.725, clarity=0.7,  turbulence=0.15),
+    "boredom":     dict(label="Boredom",     theme_scores={"boredom": 0.7},                valence=-0.35, energy01=0.175, clarity=0.3,  turbulence=0.15),
+    "love":        dict(label="Love",        theme_scores={"love": 0.8},                   valence=0.85,  energy01=0.675, clarity=0.6,  turbulence=0.15),
+    "gratitude":   dict(label="Gratitude",   theme_scores={"gratitude": 0.8},              valence=0.75,  energy01=0.625, clarity=0.65, turbulence=0.1),
+    "loneliness":  dict(label="Loneliness",  theme_scores={"loneliness": 0.8},             valence=-0.60, energy01=0.4,   clarity=0.3,  turbulence=0.25),
+    "excitement":  dict(label="Excitement",  theme_scores={"excitement": 0.8},             valence=0.70,  energy01=0.925, clarity=0.5,  turbulence=0.4),
+    "frustration": dict(label="Frustration", theme_scores={"frustration": 0.8},            valence=-0.55, energy01=0.825, clarity=0.3,  turbulence=0.7),
+    "nostalgia":   dict(label="Nostalgia",   theme_scores={"nostalgia": 0.8},              valence=0.10,  energy01=0.45,  clarity=0.45, turbulence=0.2),
+}
+
+
+def category_correction_palette(category):
+    d = CATEGORY_CORRECTION_DEFS[category]
+    return deterministic_palette_hex(d["valence"], d["energy01"], d["clarity"], d["turbulence"], d["theme_scores"])
 
 
 def preset_palette(preset_key):
@@ -527,124 +430,9 @@ def preset_palette(preset_key):
     return deterministic_palette_hex(d["valence"], d["energy01"], d["clarity"], d["turbulence"], d["theme_scores"])
 
 
-# PRESET_DEFS above only covers 6 of the 11 real classifier categories
-# (anger, focus, heavy, joy, light have no preset). That's fine for the
-# aesthetic "Palette" picker's curated 6 options, but it meant "Correct this
-# entry" could never record a correction to those 5 categories -- there was
-# no way to tell the classifier a day was actually "joy," only the adjacent
-# "hope" (via "Warmth"). This covers all 11 categories for correction UIs
-# specifically. PRESET_DEFS/PRESET_TO_CATEGORY/preset_palette() are
-# untouched and still used elsewhere (ablation study, diagnostic harness).
-CATEGORY_CORRECTION_DEFS = {
-    "stress":  dict(label="Stress",  theme_scores={"stress": 1.1, "anger": 0.3},   valence=-0.5,  energy01=0.85,  clarity=0.3,  turbulence=0.75),
-    "anger":   dict(label="Anger",   theme_scores={"anger": 0.9},                  valence=-0.7,  energy01=0.9,   clarity=0.3,  turbulence=0.85),
-    "calm":    dict(label="Calm",    theme_scores={"calm": 1.2},                   valence=0.6,   energy01=0.25,  clarity=0.5,  turbulence=0.05),
-    "clarity": dict(label="Clarity", theme_scores={"clarity": 1, "light": 0.6},    valence=0.6,   energy01=0.5,   clarity=0.85, turbulence=0.1),
-    "focus":   dict(label="Focus",   theme_scores={"focus": 0.7},                  valence=0.55,  energy01=0.7,   clarity=0.7,  turbulence=0.15),
-    "sad":     dict(label="Sorrow",  theme_scores={"sad": 0.9},                    valence=-0.6,  energy01=0.2,   clarity=0.35, turbulence=0.2),
-    "fog":     dict(label="Fog",     theme_scores={"fog": 0.8, "heavy": 0.3},      valence=-0.3,  energy01=0.3,   clarity=0.25, turbulence=0.3),
-    "heavy":   dict(label="Heavy",   theme_scores={"heavy": 0.7, "fog": 0.2},      valence=-0.45, energy01=0.35,  clarity=0.3,  turbulence=0.25),
-    "hope":    dict(label="Warmth",  theme_scores={"hope": 0.8, "joy": 0.4},       valence=0.7,   energy01=0.5,   clarity=0.6,  turbulence=0.15),
-    "joy":     dict(label="Joy",     theme_scores={"joy": 0.9, "hope": 0.2},       valence=0.78,  energy01=0.8,   clarity=0.6,  turbulence=0.1),
-    "light":   dict(label="Light",   theme_scores={"light": 0.7, "clarity": 0.2},  valence=0.63,  energy01=0.675, clarity=0.75, turbulence=0.05),
-    "fear":     dict(label="Fear",     theme_scores={"fear": 0.9},     valence=-0.64, energy01=0.81,  clarity=0.25, turbulence=0.75),
-    "surprise": dict(label="Surprise", theme_scores={"surprise": 0.8}, valence=0.20,  energy01=0.90,  clarity=0.4,  turbulence=0.55),
-    "disgust":  dict(label="Disgust",  theme_scores={"disgust": 0.8},  valence=-0.60, energy01=0.675, clarity=0.35, turbulence=0.4),
-    "guilt":    dict(label="Guilt",    theme_scores={"guilt": 0.7},    valence=-0.55, energy01=0.55,  clarity=0.3,  turbulence=0.45),
-    "pride":    dict(label="Pride",    theme_scores={"pride": 0.8},    valence=0.65,  energy01=0.725, clarity=0.7,  turbulence=0.15),
-    "boredom":  dict(label="Boredom",  theme_scores={"boredom": 0.7},  valence=-0.35, energy01=0.175, clarity=0.3,  turbulence=0.15),
-    "love":        dict(label="Love",        theme_scores={"love": 0.8},        valence=0.85,  energy01=0.675, clarity=0.6,  turbulence=0.15),
-    "gratitude":   dict(label="Gratitude",   theme_scores={"gratitude": 0.8},   valence=0.75,  energy01=0.625, clarity=0.65, turbulence=0.1),
-    "loneliness":  dict(label="Loneliness",  theme_scores={"loneliness": 0.8},  valence=-0.60, energy01=0.4,   clarity=0.3,  turbulence=0.25),
-    "excitement":  dict(label="Excitement",  theme_scores={"excitement": 0.8},  valence=0.70,  energy01=0.925, clarity=0.5,  turbulence=0.4),
-    "frustration": dict(label="Frustration", theme_scores={"frustration": 0.8}, valence=-0.55, energy01=0.825, clarity=0.3,  turbulence=0.7),
-    "nostalgia":   dict(label="Nostalgia",   theme_scores={"nostalgia": 0.8},   valence=0.10,  energy01=0.45,  clarity=0.45, turbulence=0.2),
-}
-
-
-def category_correction_palette(category):
-    d = CATEGORY_CORRECTION_DEFS[category]
-    return deterministic_palette_hex(d["valence"], d["energy01"], d["clarity"], d["turbulence"], d["theme_scores"])
-def evaluate_color_pipeline():
-    print("=" * 85)
-    print(f"{'DETERMINISTIC COLOR PALETTE & PRESET EVALUATION':^85}")
-    print("=" * 85)
-
-    def print_swatch(hex_list, label=""):
-        blocks = []
-        for h in hex_list:
-            clean_h = h.lstrip("#")
-            r, g, b = (int(clean_h[i:i+2], 16) for i in (0, 2, 4))
-            blocks.append(f"\033[48;2;{r};{g};{b}m    \033[0m")
-        print(f"{label:<16} {' '.join(blocks)}  [{' '.join(hex_list)}]")
-
-    # --------------------------------------------------------------------------
-    # 1. EVALUATE CURATED PRESETS (PRESET_DEFS)
-    # --------------------------------------------------------------------------
-    print("\n1. Curated User Presets (6 Core States)")
-    print("-" * 85)
-    preset_hashes = set()
-    preset_shape_errors = 0
-
-    for key, d in PRESET_DEFS.items():
-        raw = deterministic_palette(d["valence"], d["energy01"], d["clarity"], d["turbulence"], d["theme_scores"])
-        if raw.shape != (12,):
-            preset_shape_errors += 1
-
-        hexes = preset_palette(key)
-        preset_hashes.add(tuple(hexes))
-        print_swatch(hexes, label=f"Preset [{key}]:")
-
-    # --------------------------------------------------------------------------
-    # 2. EVALUATE ALL 23 CATEGORY CORRECTION PALETTES
-    # --------------------------------------------------------------------------
-    print("\n2. All 23 Category Correction Palettes")
-    print("-" * 85)
-    cat_hashes = set()
-    gamut_violations = 0
-    cat_shape_errors = 0
-
-    for cat, d in CATEGORY_CORRECTION_DEFS.items():
-        raw = deterministic_palette(d["valence"], d["energy01"], d["clarity"], d["turbulence"], d["theme_scores"])
-
-        if raw.shape != (12,):
-            cat_shape_errors += 1
-
-        # Check normalized RGB bound [0.0, 1.0]
-        if np.any(raw < 0.0) or np.any(raw > 1.0):
-            gamut_violations += 1
-
-        hexes = category_correction_palette(cat)
-        cat_hashes.add(tuple(hexes))
-        print_swatch(hexes, label=f"{cat.capitalize()}:")
-
-    # --------------------------------------------------------------------------
-    # 3. STATISTICAL DIVERSITY & INTEGRITY SUMMARY
-    # --------------------------------------------------------------------------
-    print("\n" + "=" * 85)
-    print("PIPELINE DIAGNOSTIC SUMMARY")
-    print("=" * 85)
-
-    n_presets = len(PRESET_DEFS)
-    n_categories = len(CATEGORY_CORRECTION_DEFS)
-    unique_preset_ratio = len(preset_hashes) / n_presets
-    unique_cat_ratio = len(cat_hashes) / n_categories
-
-    print(f"Total Presets Tested:       {n_presets:<2} (Unique Output Palettes: {len(preset_hashes)})")
-    print(f"Total Categories Tested:    {n_categories:<2} (Unique Output Palettes: {len(cat_hashes)})")
-    print(f"RGB Gamut Violations:       {gamut_violations}")
-    print(f"Dimension/Shape Errors:     {preset_shape_errors + cat_shape_errors}")
-
-    if gamut_violations == 0 and unique_cat_ratio == 1.0 and unique_preset_ratio == 1.0:
-        print("✓ SUCCESS: All 23 categories generate unique, valid 12-dimensional color palettes.")
-    else:
-        print("✗ WARNING: Palette collisions or out-of-gamut RGB values detected.")
-    print("=" * 85)
-
-# Run evaluation
-evaluate_color_pipeline()
-
-
+# ==============================================================================
+# 3. DIARY MOOD CLASSIFIER & REGRESSION MODELS
+# ==============================================================================
 class DiaryMoodClassifier:
     def __init__(self, seed_examples=None):
         seed_examples = seed_examples or SEED_EXAMPLES
@@ -654,16 +442,15 @@ class DiaryMoodClassifier:
             for text in examples:
                 self.texts.append(text)
                 self.labels.append(category)
-        self.vectorizer = CountVectorizer(lowercase=True, stop_words="english")
-        self.model = MultinomialNB(alpha=1.0)
+        self.vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), sublinear_tf=True)
+        self.model = LogisticRegression(C=10.0, max_iter=1000, random_state=42)
         self.mapper = EmotionalMapper(CATEGORY_ANCHORS_VAD)
         self._fit()
 
     def _fit(self):
         X = self.vectorizer.fit_transform(self.texts)
         self.model.fit(X, self.labels)
-        import scipy.sparse as sp
-        zero_vec = sp.csr_matrix((1, len(self.vectorizer.vocabulary_)))
+        zero_vec = np.zeros((1, len(self.vectorizer.vocabulary_)))
         proba = self.model.predict_proba(zero_vec)[0]
         self._baseline_valence = sum(
             p * CATEGORY_ANCHORS_VAD[c][0] for c, p in zip(self.model.classes_, proba)
@@ -696,7 +483,6 @@ class DiaryMoodClassifier:
         proba = self.model.predict_proba(X)[0]
         classes = list(self.model.classes_)
         posterior = dict(zip(classes, proba))
-
         mapped = self.mapper.map(posterior)
         mapped["energy"] = mapped["arousal"]
         mapped["posterior"] = posterior
@@ -714,107 +500,6 @@ class DiaryMoodClassifier:
     def training_set_size(self):
         return len(self.texts)
 
-def evaluate_diary_mood_classifier():
-    print("=" * 85)
-    print(f"{'DIARY MOOD CLASSIFIER INTEGRATION EVALUATION':^85}")
-    print("=" * 85)
-
-    clf = DiaryMoodClassifier()
-
-    # --------------------------------------------------------------------------
-    # 1. TEXT INFERENCE & POSTERIOR ANALYSIS
-    # --------------------------------------------------------------------------
-    print("\n1. Diary Entry Inference & VAD Mapping")
-    print("-" * 85)
-
-    test_diary_entries = [
-        ("Woke up early, made tea, and enjoyed the quiet morning breeze.", "calm"),
-        ("Everything went wrong at work, furious with the endless delays and mistakes.", "anger"),
-        ("Overwhelmed by back-to-back meetings and tight deadlines.", "stress"),
-        ("I feel completely drained, exhausted, and weighed down today.", "heavy"),
-        ("Found an old photo album and spent hours remembering my childhood.", "nostalgia"),
-        ("I pulled off the entire presentation successfully, so proud!", "pride")
-    ]
-
-    correct_inferences = 0
-    for text, expected in test_diary_entries:
-        res = clf.analyze(text)
-        top_cat = res["top_category"]
-        top_prob = res["posterior"][top_cat]
-        vad_str = f"V: {res['valence']:+.2f} | A: {res['arousal']:+.2f} | D: {res['dominance']:+.2f}"
-
-        match = "✓" if top_cat == expected else "~"
-        if top_cat == expected:
-            correct_inferences += 1
-
-        print(f"Text: \"{text}\"")
-        print(f"  [{match}] Predicted: {top_cat.upper():<12} (Confidence: {top_prob*100:.1f}%) | Style: <{res['style']}>")
-        print(f"      Coordinates: {vad_str} | Clarity: {res['clarity']:.2f}")
-        print(f"      Poetic: \"{res['reading']}\"\n")
-
-    # --------------------------------------------------------------------------
-    # 2. LEXICAL WORD-LEVEL VALENCE SCORING
-    # --------------------------------------------------------------------------
-    print("-" * 85)
-    print("2. Word Valence Scores Relative to Baseline")
-    print(f"Baseline Valence: {clf._baseline_valence:+.4f}")
-    print("-" * 85)
-
-    sample_words = ["joy", "peaceful", "rage", "grief", "exhausted", "radiant", "unknownwordxyz"]
-    for w in sample_words:
-        score = clf.word_score(w)
-        direction = "Positive" if score > 0.05 else "Negative" if score < -0.05 else "Neutral/OOV"
-        print(f"  • Word: {w:<16} Score: {score:+.4f} ({direction})")
-
-    # --------------------------------------------------------------------------
-    # 3. ONLINE INCREMENTAL LEARNING TEST
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("3. Incremental Learning (`learn`) & State Persistence")
-    print("-" * 85)
-
-    initial_size = clf.training_set_size()
-    sample_text = "The chaotic noise and endless traffic were deeply infuriating."
-
-    # Analyze prior to learning
-    pre_res = clf.analyze(sample_text)
-
-    # Provide manual correction / online update
-    clf.learn(sample_text, "frustration")
-    post_res = clf.analyze(sample_text)
-    new_size = clf.training_set_size()
-
-    print(f"Training Set Size: {initial_size} -> {new_size}")
-    print(f"Target Correction: [FRUSTRATION]")
-    print(f"  • Before Learn: Top Category = [{pre_res['top_category'].upper()}] (Prob: {pre_res['posterior'].get('frustration', 0.0)*100:.1f}%)")
-    print(f"  • After Learn:  Top Category = [{post_res['top_category'].upper()}] (Prob: {post_res['posterior'].get('frustration', 0.0)*100:.1f}%)")
-
-    # State serialization check
-    state = clf.get_state()
-    clf_restored = DiaryMoodClassifier()
-    clf_restored.load_state(state)
-    restored_size = clf_restored.training_set_size()
-    state_valid = (restored_size == new_size)
-
-    # --------------------------------------------------------------------------
-    # 4. DIAGNOSTIC SUMMARY
-    # --------------------------------------------------------------------------
-    print("\n" + "=" * 85)
-    print("CLASSIFIER SYSTEM SUMMARY")
-    print("=" * 85)
-    print(f"Sample Sentence Matches:     {correct_inferences}/{len(test_diary_entries)}")
-    print(f"State Serialization Check:   {'✓ Passed' if state_valid else '✗ Failed'}")
-    print(f"Word Scoring Directionality: {'✓ Passed' if clf.word_score('joy') > clf.word_score('grief') else '✗ Failed'}")
-
-    if correct_inferences >= len(test_diary_entries) - 1 and state_valid:
-        print("✓ SUCCESS: DiaryMoodClassifier handles inference, VAD projection, and online updates properly.")
-    else:
-        print("⚠ PARTIAL: Classifier functional, but review posterior confidence across edge cases.")
-    print("=" * 85)
-
-# Run evaluation
-evaluate_diary_mood_classifier()
-    
 
 def _random_theme_scores(rng):
     scores = {c: 0.0 for c in CATEGORIES}
@@ -828,7 +513,6 @@ def _random_theme_scores(rng):
 def _theme_scores_from_posterior(posterior, rng, noise=0.15):
     if not posterior:
         return {}
-
     top_category = max(posterior, key=posterior.get)
     scores = {c: 0.0 for c in CATEGORIES}
     scores[top_category] = float(np.clip(posterior[top_category] * 3.0 + rng.uniform(-noise, noise), 0.3, 1.4))
@@ -912,126 +596,14 @@ class ArtColorModel:
             "fraction_real": self.n_real_corrections / max(1, len(self._X)),
         }
 
-def evaluate_art_color_model():
-    print("=" * 85)
-    print(f"{'ART COLOR LINEAR REGRESSION MODEL EVALUATION':^85}")
-    print("=" * 85)
 
-    def print_swatch(hex_list, label=""):
-        blocks = []
-        for h in hex_list:
-            clean_h = h.lstrip("#")
-            r, g, b = (int(clean_h[i:i + 2], 16) for i in (0, 2, 4))
-            blocks.append(f"\033[48;2;{r};{g};{b}m    \033[0m")
-        print(f"{label:<20} {' '.join(blocks)}  [{' '.join(hex_list)}]")
-
-    # Initialize model
-    model = ArtColorModel(n_synthetic_samples=800, random_state=42)
-
-    # --------------------------------------------------------------------------
-    # 1. RESIDUAL REGRESSION METRICS ON SYNTHETIC MANIFOLD
-    # --------------------------------------------------------------------------
-    print("\n1. Fit & Approximation Quality (Linear vs Deterministic Non-Linear Target)")
-    print("-" * 85)
-
-    X_arr = np.array(model._X)
-    y_arr = np.array(model._y)
-    y_pred_raw = model.model.predict(X_arr)
-
-    mse = mean_squared_error(y_arr, y_pred_raw)
-    r2 = r2_score(y_arr, y_pred_raw)
-
-    print(f"Total Features (VAD + 23 Categories): {X_arr.shape[1]}")
-    print(f"Target Dimension (4 RGB Stops):        {y_arr.shape[1]}")
-    print(f"Training Mean Squared Error (MSE):     {mse:.6f}")
-    print(f"Explained Variance (R² Score):         {r2:.4f}")
-
-    # --------------------------------------------------------------------------
-    # 2. COMPARISON: GROUND TRUTH VS LINEAR PREDICTION
-    # --------------------------------------------------------------------------
-    print("\n2. Visual Palette Reconstruction Check")
-    print("-" * 85)
-
-    eval_scenarios = [
-        ("High Calm", {"calm": 1.2}, 0.60, 0.25, 0.50, 0.05),
-        ("High Anger", {"anger": 1.0}, -0.75, 0.90, 0.30, 0.85),
-        ("Bright Clarity", {"clarity": 1.0, "light": 0.6}, 0.65, 0.50, 0.85, 0.10),
-        ("Heavy Fog", {"fog": 0.8, "heavy": 0.5}, -0.35, 0.30, 0.25, 0.30),
-    ]
-
-    for name, themes, v, e, cl, tb in eval_scenarios:
-        gt_hex = deterministic_palette_hex(v, e, cl, tb, themes)
-        pred_hex = model.predict_palette(v, e, cl, tb, themes)
-        print(f"Scenario: {name}")
-        print_swatch(gt_hex, label="  • Deterministic (GT):")
-        print_swatch(pred_hex, label="  • Linear Model Pred:")
-        print()
-
-    # --------------------------------------------------------------------------
-    # 3. ONLINE CORRECTION & FINE-TUNING CHECK
-    # --------------------------------------------------------------------------
-    print("-" * 85)
-    print("3. User Feedback & Online Correction (`learn`)")
-    print("-" * 85)
-
-    test_v, test_e, test_cl, test_tb = 0.5, 0.5, 0.5, 0.2
-    test_themes = {"joy": 0.8}
-    pre_correction = model.predict_palette(test_v, test_e, test_cl, test_tb, test_themes)
-
-    # User submits a custom palette correction
-    user_hex_palette = ["#1a0933", "#561d5e", "#c44569", "#f8a5c2"]
-    model.learn(test_v, test_e, test_cl, test_tb, test_themes, user_hex_palette)
-    post_correction = model.predict_palette(test_v, test_e, test_cl, test_tb, test_themes)
-
-    print_swatch(pre_correction, label="Before Correction:")
-    print_swatch(user_hex_palette, label="Target Correction:")
-    print_swatch(post_correction, label="After Update:")
-
-    summary = model.data_summary()
-    print(f"\nData Summary: {summary['synthetic_examples']} synthetic + {summary['real_corrections']} user corrections "
-          f"({summary['fraction_real'] * 100:.2f}% real)")
-
-    # --------------------------------------------------------------------------
-    # 4. STATE SERIALIZATION CHECK
-    # --------------------------------------------------------------------------
-    state = model.get_state()
-    restored_model = ArtColorModel(n_synthetic_samples=10)
-    restored_model.load_state(state)
-    restored_pred = restored_model.predict_palette(test_v, test_e, test_cl, test_tb, test_themes)
-    state_valid = (restored_pred == post_correction)
-
-    # --------------------------------------------------------------------------
-    # DIAGNOSTIC SUMMARY
-    # --------------------------------------------------------------------------
-    print("\n" + "=" * 85)
-    print("MODEL SUMMARY")
-    print("=" * 85)
-    print(f"Fit Metric (R²):             {r2:.4f}")
-    print(f"Online Learning:             ✓ Verified (1 correction registered)")
-    print(f"State Serialization:         {'✓ Passed' if state_valid else '✗ Failed'}")
-
-    if r2 > 0.65 and state_valid:
-        print("✓ SUCCESS: ArtColorModel approximates the non-linear palette function reliably.")
-    else:
-        print("⚠ NOTE: LinearRegression captures baseline gradients; consider polynomial features for higher non-linear fidelity.")
-    print("=" * 85)
-
-
-# Run evaluation
-evaluate_art_color_model()
-    
-
-
+# ==============================================================================
+# 4. PALETTE CVAE ARCHITECTURE & LATENT DIFFUSION
+# ==============================================================================
 COND_DIM = 5
 X_DIM = 12
 LATENT_DIM = 4
 
-CATEGORIES = [
-    "stress", "anger", "calm", "clarity", "focus", "sad", "fog", "heavy",
-    "hope", "joy", "light", "fear", "surprise", "disgust", "guilt", "pride",
-    "boredom", "love", "gratitude", "loneliness", "excitement", "frustration",
-    "nostalgia"
-]
 
 class _CVAEEmoMapper:
     def map(self, posterior):
@@ -1046,18 +618,6 @@ class _CVAEEmoMapper:
             "turbulence": float(np.clip(1.0 - min(posterior.values()), 0.0, 1.0))
         }
 
-def _theme_scores_from_posterior(posterior, rng):
-    top_category = max(posterior, key=posterior.get)
-    scores = {c: 0.0 for c in CATEGORIES}
-    scores[top_category] = float(np.clip(posterior[top_category] * 3.0 + rng.uniform(-0.15, 0.15), 0.3, 1.4))
-    for cat, p in posterior.items():
-        if cat != top_category and p > 0.15:
-            scores[cat] = float(np.clip(p * 2.0 + rng.uniform(0, 0.15), 0.05, 0.6))
-    return scores
-
-# ==============================================================================
-# CVAE ARCHITECTURE
-# ==============================================================================
 
 class _Encoder(nn.Module):
     def __init__(self):
@@ -1081,14 +641,12 @@ class _Decoder(nn.Module):
         super().__init__()
         self.fc1 = nn.Linear(LATENT_DIM + COND_DIM, 64)
         self.fc2 = nn.Linear(64, 32)
-
         self.film_gamma = nn.Linear(COND_DIM, 32)
         self.film_beta = nn.Linear(COND_DIM, 32)
         nn.init.zeros_(self.film_gamma.weight)
         nn.init.ones_(self.film_gamma.bias)
         nn.init.zeros_(self.film_beta.weight)
         nn.init.zeros_(self.film_beta.bias)
-
         self.out_fc = nn.Sequential(
             nn.Linear(32, 32),
             nn.LeakyReLU(0.2),
@@ -1104,25 +662,23 @@ class _Decoder(nn.Module):
         h = gamma * h + beta
         return self.out_fc(h)
 
-# ==============================================================================
-# CVAE TRAINING PIPELINE
-# ==============================================================================
 
 class CVAEArtModel:
-    def __init__(self, n_synthetic_samples=2500, epochs=150, lr=1e-3, batch_size=64, random_state=42):
+    def __init__(self, n_synthetic_samples=2500, epochs=5, lr=1e-3, batch_size=64, random_state=42):
         torch.manual_seed(random_state)
         self.encoder = _Encoder()
         self.decoder = _Decoder()
-        self.mapper = _CVAEEmoMapper() # Updated to use the renamed mapper
+        self.mapper = _CVAEEmoMapper()
         self.batch_size = batch_size
+        self.n_synthetic_samples = n_synthetic_samples
+        self.n_real_corrections = 0
         self._X, self._C = self._build_synthetic_dataset(n_synthetic_samples, random_state)
-        self.n_synthetic_samples = n_synthetic_samples # Store this for data_summary
-        self._train(epochs, lr, verbose=True)
+        if epochs > 0:
+            self._train(epochs, lr, verbose=False)
 
     @staticmethod
     def _cvae_deterministic_palette(valence, energy01, clarity, turbulence, theme_scores, rng=None):
         T = theme_scores or {}
-
         if T.get("anger", 0) > 0.5:
             base_hue = 8.0
         elif T.get("calm", 0) > 0.4:
@@ -1133,8 +689,6 @@ class CVAEArtModel:
             base_hue = 270.0
 
         base_hue += valence * 15.0
-
-        # Stochastic latent style variations across H, S, and L
         if rng is not None:
             hue = base_hue + rng.normal(0, 35.0)
             hue_step = rng.uniform(40.0, 140.0)
@@ -1147,13 +701,11 @@ class CVAEArtModel:
             lum_shift = 0.0
 
         base_sat = np.clip(0.5 + turbulence * 0.25 + sat_jitter, 0.15, 0.95)
-
         colors = []
         for i in range(4):
             h_offset = (hue + i * hue_step) % 360
             s = np.clip(base_sat * (0.35 + i * 0.2), 0.05, 0.95)
             l = np.clip(0.25 + (i * 0.18) + clarity * 0.12 + lum_shift, 0.05, 0.95)
-
             c = (1.0 - abs(2.0 * l - 1.0)) * s
             x = c * (1.0 - abs(((h_offset / 60.0) % 2.0) - 1.0))
             m = l - c / 2.0
@@ -1176,7 +728,6 @@ class CVAEArtModel:
                 np.clip(g + m, 0.0, 1.0),
                 np.clip(b + m, 0.0, 1.0)
             ])
-
         return np.array(colors, dtype=np.float32)
 
     def _build_synthetic_dataset(self, n, random_state):
@@ -1207,21 +758,18 @@ class CVAEArtModel:
         params = list(self.encoder.parameters()) + list(self.decoder.parameters())
         opt = torch.optim.Adam(params, lr=lr)
         loader = DataLoader(TensorDataset(self._X, self._C), batch_size=self.batch_size, shuffle=True)
-
         log_path = Path("cvae_training_fixed.csv")
         log_file = open(log_path, "w", newline="")
         log_writer = csv.writer(log_file)
         log_writer.writerow(["epoch", "reconstruction_loss", "kl_loss", "total_loss", "color_std", "beta"])
-
         free_bits = 0.15
 
+        loss_before = 0.0
         for epoch in range(epochs):
             self.encoder.train()
             self.decoder.train()
-
             warmup = int(0.3 * epochs)
             beta = min(0.04, (epoch / max(1, warmup)) * 0.04)
-
             epoch_recon, epoch_kl, epoch_total = 0.0, 0.0, 0.0
 
             for bx, bc in loader:
@@ -1229,11 +777,9 @@ class CVAEArtModel:
                 mu, logvar = self.encoder(bx, bc)
                 z = self.reparameterize(mu, logvar)
                 recon = self.decoder(z, bc)
-
                 recon_loss = F.mse_loss(recon, bx, reduction="none").sum(dim=-1).mean()
                 kl_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
                 kl_loss = torch.clamp(kl_per_dim, min=free_bits).sum(dim=-1).mean()
-
                 loss = recon_loss + beta * kl_loss
                 loss.backward()
                 opt.step()
@@ -1246,6 +792,8 @@ class CVAEArtModel:
             epoch_recon /= n
             epoch_kl /= n
             epoch_total /= n
+            if epoch == 0:
+                loss_before = epoch_total
 
             self.decoder.eval()
             with torch.no_grad():
@@ -1256,10 +804,8 @@ class CVAEArtModel:
             log_writer.writerow([epoch, f"{epoch_recon:.6f}", f"{epoch_kl:.6f}", f"{epoch_total:.6f}", f"{std_dev:.6f}", f"{beta:.4f}"])
             log_file.flush()
 
-            if verbose and epoch % 30 == 0:
-                print(f"Epoch {epoch:3d}/{epochs}: recon={epoch_recon:.4f}, kl={epoch_kl:.4f}, std_dev={std_dev:.4f}, beta={beta:.4f}")
-
         log_file.close()
+        return loss_before, epoch_total
 
     def sample(self, mood_vad, n_samples=5):
         cond = torch.tensor([[mood_vad["valence"], mood_vad["arousal"], mood_vad["dominance"],
@@ -1285,43 +831,33 @@ class CVAEArtModel:
         target = torch.tensor([c for hexcolor in target_hex_palette for c in ArtColorModel._hex_to_rgb01(hexcolor)], dtype=torch.float32).unsqueeze(0)
         cond = torch.tensor([[mood_vad["valence"], mood_vad["arousal"], mood_vad["dominance"],
                               mood_vad["clarity"], mood_vad["turbulence"]]], dtype=torch.float32)
-
         params = list(self.decoder.parameters())
         opt = torch.optim.Adam(params, lr=lr)
-
         self.decoder.train()
         for _ in range(steps):
             opt.zero_grad()
-            # For fine-tuning, we fix Z and only update decoder weights
-            # We derive Z from the target, or use a fixed Z for reconstruction
-            # For now, let's assume we want to push the decoder to reconstruct 'target' for 'cond' and a latent Z
-            # A simple approach for fine-tuning a CVAE on new data is to optimize the reconstruction loss
-            # For this purpose, we need to infer a latent Z from the target, or use a predefined one.
-            # Let's simplify and just focus on reconstruction, by passing a 'placeholder' Z
-            # In a real fine-tuning, you might re-encode or use a simpler decoder-only training approach
-
-            # Option 1: Use an inferred Z from the current target (requires encoder to be trained/fixed)
-            # mu, logvar = self.encoder(target, cond)
-            # z = self.reparameterize(mu, logvar)
-
-            # Option 2: Use a fixed Z (e.g., zero vector) and focus on making decoder output 'target' for 'cond'
-            # This treats the decoder as a conditional generator, ignoring the variational aspect for fine-tuning
             z = torch.zeros(1, LATENT_DIM)
             recon = self.decoder(z, cond)
             loss = F.mse_loss(recon, target)
             loss.backward()
             opt.step()
-
-        # After fine-tuning, re-add to dataset for future broader training if needed
         self._X = torch.cat([self._X, target], dim=0)
         self._C = torch.cat([self._C, cond], dim=0)
+        self.n_real_corrections += 1
+
+    def maybe_periodic_retrain(self):
+        if self.n_real_corrections > 0 and self.n_real_corrections % 10 == 0:
+            loss_before, loss_after = self._train(epochs=40, lr=1e-3, verbose=False)
+            return True, loss_before, loss_after
+        return False, 0.0, 0.0
 
     def get_state(self):
         return {
             "encoder_state_dict": self.encoder.state_dict(),
             "decoder_state_dict": self.decoder.state_dict(),
             "X": self._X, "C": self._C,
-            "n_synthetic_samples": self.n_synthetic_samples
+            "n_synthetic_samples": self.n_synthetic_samples,
+            "n_real_corrections": self.n_real_corrections
         }
 
     def load_state(self, state):
@@ -1333,128 +869,12 @@ class CVAEArtModel:
         self._X = state["X"]
         self._C = state["C"]
         self.n_synthetic_samples = state["n_synthetic_samples"]
+        self.n_real_corrections = state.get("n_real_corrections", 0)
+
 
 # ==============================================================================
-# PRINT & EVALUATION
+# 5. K-MEANS ARCHIVE & TEMPORAL LSTM FORECASTER
 # ==============================================================================
-
-def print_palette(hex_colors, label=""):
-    ansi_blocks = []
-    for hex_code in hex_colors:
-        h = hex_code.lstrip("#")
-        r, g, b = (int(h[i:i+2], 16) for i in (0, 2, 4))
-        ansi_blocks.append(f"\033[48;2;{r};{g};{b}m    \033[0m")
-    print(f"{label:<12} {' '.join(ansi_blocks)}  [{' '.join(hex_colors)}]")
-
-
-if __name__ == "__main__":
-    print("Starting CVAE training...\n")
-    cvae = CVAEArtModel(epochs=150)
-
-    df = pd.read_csv("cvae_training_fixed.csv")
-    final_recon = df['reconstruction_loss'].iloc[-1]
-    final_kl = df['kl_loss'].iloc[-1]
-    final_std = df['color_std'].iloc[-1]
-    final_beta = df['beta'].iloc[-1]
-
-    print("\n" + "=" * 70)
-    print("FINAL RESULTS")
-    print("=" * 70)
-    print(f"Final reconstruction loss: {final_recon:.4f}")
-    print(f"Final KL loss:             {final_kl:.4f}")
-    print(f"Final color std dev:       {final_std:.4f}")
-    print(f"Final \u03b2 value:             {final_beta:.4f}")
-    print("=" * 70)
-
-    if final_std >= 0.08 and final_kl >= 0.2:
-        print("\u2713 SUCCESS: High palette diversity and active latent space.")
-    elif final_std >= 0.04 and final_kl >= 0.05:
-        print("\u26a0 PARTIAL: Output has subtle variation.")
-    else:
-        print("\u2717 PROBLEM: Latent space collapsed.")
-    print("=" * 70)
-
-    print("\nVisual Sample Test (5 latent variations for exact same mood):")
-    sample_mood = {"valence": 0.70, "arousal": 0.50, "dominance": 0.60, "clarity": 0.50, "turbulence": 0.30}
-    samples = cvae.sample(sample_mood, n_samples=5)
-    for idx, palette in enumerate(samples, 1):
-        print_palette(palette, label=f"Sample {idx}:")
-
-     
-
-
-def convert_12_to_hex_palette(vec12):
-    """Converts a 12-element RGB01 vector (4 colors) to a list of 4 hex strings."""
-    stops = np.clip(vec12, 0, 1).reshape(4, 3)
-    return [rgb01_to_hex(s) for s in stops]
-
-def verify_vad_conditioning(cvae_model):
-    print("\n" + "=" * 75)
-    print("VAD CONDITIONING VERIFICATION")
-    print("=" * 75)
-
-    cvae_model.decoder.eval()
-
-    # 1. FIXED Z, OPPOSITE POLARITY TEST
-    z_fixed = torch.zeros((1, LATENT_DIM))  # Fixed at mean prior
-
-    # Opposite mood states
-    calm_vad  = torch.tensor([[ 0.8, -0.6,  0.4, 0.8, 0.1]], dtype=torch.float32)
-    anger_vad = torch.tensor([[-0.8,  0.8,  0.6, 0.2, 0.9]], dtype=torch.float32)
-    sad_vad   = torch.tensor([[-0.7, -0.5, -0.6, 0.3, 0.4]], dtype=torch.float32)
-
-    with torch.no_grad():
-        out_calm = cvae_model.decoder(z_fixed, calm_vad).cpu().numpy()[0]
-        out_anger = cvae_model.decoder(z_fixed, anger_vad).cpu().numpy()[0]
-        out_sad = cvae_model.decoder(z_fixed, sad_vad).cpu().numpy()[0]
-
-    # Use the new helper function for conversion
-    calm_hex = convert_12_to_hex_palette(out_calm)
-    anger_hex = convert_12_to_hex_palette(out_anger)
-    sad_hex = convert_12_to_hex_palette(out_sad)
-
-    print("Test 1: Opposing Moods with Identical Latent Code (z = 0)")
-    print_palette(calm_hex, label="High Calm:")
-    print_palette(anger_hex, label="High Anger:")
-    print_palette(sad_hex, label="High Sadness:")
-
-    # 2. SMOOTH LINEAR INTERPOLATION (Valence Sweep: -1.0 -> +1.0)
-    print("\nTest 2: Valence Linear Sweep (-1.0 to +1.0) with Constant z")
-    n_steps = 6
-    valences = np.linspace(-1.0, 1.0, n_steps)
-    for v in valences:
-        c_interp = torch.tensor([[v, 0.3, 0.2, 0.5, 0.3]], dtype=torch.float32)
-        with torch.no_grad():
-            out_interp = cvae_model.decoder(z_fixed, c_interp).cpu().numpy()[0]
-        # Use the new helper function for conversion
-        print_palette(convert_12_to_hex_palette(out_interp), label=f"Valence {v:+0.2f}:")
-
-    # 3. GRADIENT SENSITIVITY CHECK: ||d(output) / d(condition)||
-    # Ensure c_grad_test has requires_grad=True for gradient calculation
-    c_grad_test = torch.tensor([[0.0, 0.0, 0.0, 0.5, 0.5]], dtype=torch.float32, requires_grad=True)
-
-    # Ensure that z_fixed does not require grad
-    z_fixed_no_grad = z_fixed.detach()
-
-    out_for_grad = cvae_model.decoder(z_fixed_no_grad, c_grad_test)
-
-    # Calculate gradients
-    out_for_grad.sum().backward()
-
-    grad_norm = c_grad_test.grad.norm().item() if c_grad_test.grad is not None else 0.0
-    print(f"\nTest 3: Condition Sensitivity Norm ||d(out)/dc||: {grad_norm:.4f}")
-
-    if grad_norm > 0.1 and calm_hex != anger_hex:
-        print("✓ PASS: Decoder responds directly and continuously to VAD conditioning.")
-    else:
-        print("✗ FAIL: Decoder is ignoring VAD conditions.")
-    print("=" * 75)
-
-if __name__ == "__main__":
-    cvae = CVAEArtModel(epochs=150)
-    verify_vad_conditioning(cvae)
-    
-
 class ArchiveClustering:
     def __init__(self, n_clusters=4, random_state=42):
         self.n_clusters = n_clusters
@@ -1464,9 +884,7 @@ class ArchiveClustering:
 
     def fit(self, entries):
         if len(entries) < self.n_clusters:
-            raise ValueError(
-                f"Need at least {self.n_clusters} entries to form {self.n_clusters} clusters."
-            )
+            raise ValueError(f"Need at least {self.n_clusters} entries to form {self.n_clusters} clusters.")
         X = np.array([[e["valence"], e["arousal"], e["clarity"], e["turbulence"]] for e in entries])
         self.model = KMeans(n_clusters=self.n_clusters, random_state=self.random_state, n_init=10)
         assignments = self.model.fit_predict(X)
@@ -1482,105 +900,6 @@ class ArchiveClustering:
             )
             self.cluster_labels[cluster_id] = nearest[0]
 
-def evaluate_archive_clustering():
-    print("=" * 85)
-    print(f"{'ARCHIVE K-MEANS CLUSTERING EVALUATION':^85}")
-    print("=" * 85)
-
-    # --------------------------------------------------------------------------
-    # 1. SYNTHETIC MULTI-MOOD DIARY ENTRIES
-    # --------------------------------------------------------------------------
-    rng = np.random.default_rng(42)
-
-    # 4 distinct emotional clusters: Calm, Stress/Anger, Clarity, Heavy/Sad
-    mock_entries = []
-    cluster_profiles = [
-        {"val": (0.4, 0.8), "aro": (-0.6, -0.2), "cla": (0.6, 0.9), "tur": (0.0, 0.2), "tag": "Calm Group"},
-        {"val": (-0.8, -0.4), "aro": (0.5, 0.9), "cla": (0.2, 0.5), "tur": (0.6, 0.9), "tag": "Stress Group"},
-        {"val": (0.5, 0.8), "aro": (0.3, 0.7), "cla": (0.7, 1.0), "tur": (0.0, 0.3), "tag": "Clarity Group"},
-        {"val": (-0.7, -0.3), "aro": (-0.6, -0.2), "cla": (0.1, 0.4), "tur": (0.2, 0.5), "tag": "Sad/Heavy Group"},
-    ]
-
-    for p in cluster_profiles:
-        for _ in range(15):
-            mock_entries.append({
-                "valence": float(rng.uniform(*p["val"])),
-                "arousal": float(rng.uniform(*p["aro"])),
-                "clarity": float(rng.uniform(*p["cla"])),
-                "turbulence": float(rng.uniform(*p["tur"])),
-                "text": f"Sample entry reflecting {p['tag']}",
-            })
-
-    # --------------------------------------------------------------------------
-    # 2. FIT & CENTROID LABEL MATCHING
-    # --------------------------------------------------------------------------
-    n_clusters = 4
-    clusterer = ArchiveClustering(n_clusters=n_clusters, random_state=42)
-    assignments = clusterer.fit(mock_entries)
-
-    X = np.array([[e["valence"], e["arousal"], e["clarity"], e["turbulence"]] for e in mock_entries])
-    sil_score = silhouette_score(X, assignments)
-    db_score = davies_bouldin_score(X, assignments)
-
-    print(f"Total Diary Entries Clustered: {len(mock_entries)}")
-    print(f"Number of Clusters (k):        {n_clusters}")
-    print(f"Silhouette Score (Separation): {sil_score:.4f}  (Range: [-1, 1], >0.5 indicates strong clusters)")
-    print(f"Davies-Bouldin Index:          {db_score:.4f}  (Lower is better)")
-
-    # --------------------------------------------------------------------------
-    # 3. CENTROID & NEAREST ANCHOR BREAKDOWN
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("Cluster Centers & Semantic Anchor Projections")
-    print("-" * 85)
-    print(f"{'Cluster':<9} | {'Assigned Name':<14} | {'Centroid [V, A, C, T]':<32} | {'Count':<6}")
-    print("-" * 85)
-
-    unique_labels = set()
-    for cid, center in enumerate(clusterer.model.cluster_centers_):
-        name = clusterer.cluster_labels[cid]
-        unique_labels.add(name)
-        count = assignments.count(cid)
-        c_str = f"[{center[0]:+.2f}, {center[1]:+.2f}, {center[2]:.2f}, {center[3]:.2f}]"
-        print(f"Cluster {cid:<2} | {name.upper():<14} | {c_str:<32} | {count:<6}")
-
-    # --------------------------------------------------------------------------
-    # 4. EDGE CASE CHECK (INSUFFICIENT ENTRIES)
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("Edge Case & Error Handling Checks")
-    print("-" * 85)
-
-    insufficient_passed = False
-    try:
-        small_clusterer = ArchiveClustering(n_clusters=5)
-        small_clusterer.fit(mock_entries[:3])
-    except ValueError as e:
-        insufficient_passed = True
-        print(f"✓ Insufficient Entry Exception: Caught expected ValueError ('{e}')")
-
-    # --------------------------------------------------------------------------
-    # SUMMARY DIAGNOSTIC
-    # --------------------------------------------------------------------------
-    print("\n" + "=" * 85)
-    print("CLUSTERING DIAGNOSTIC SUMMARY")
-    print("=" * 85)
-    print(f"Cluster Distinctness:        {len(unique_labels)}/{n_clusters} unique semantic anchor names")
-    print(f"Geometric Separation:        {'✓ Strong' if sil_score > 0.4 else '⚠ Moderate/Weak'}")
-    print(f"Error Guardrails:            {'✓ Passed' if insufficient_passed else '✗ Failed'}")
-
-    if sil_score > 0.4 and len(unique_labels) == n_clusters and insufficient_passed:
-        print("✓ SUCCESS: ArchiveClustering forms well-separated clusters and correctly maps centroids to VAD anchors.")
-    else:
-        print("⚠ NOTE: Review cluster separation or adjust k based on data density.")
-    print("=" * 85)
-
-
-# Run evaluation
-evaluate_archive_clustering()
-
-
-
 
 class MoodLSTM(nn.Module):
     def __init__(self, input_dim=3, hidden_dim=24, num_layers=1):
@@ -1593,10 +912,8 @@ class MoodLSTM(nn.Module):
         )
 
     def forward(self, x):
-        # x shape: (batch_size, seq_len, 3)
         out, _ = self.lstm(x)
         last_step = x[:, -1, :]
-        # Residual delta prediction
         delta = self.fc(out[:, -1, :])
         return torch.clamp(last_step + delta, -1.0, 1.0)
 
@@ -1617,18 +934,18 @@ def _generate_synthetic_vad_trajectories(n_sequences=1200, seq_len=6, random_sta
 
 
 class MoodTemporalForecaster:
-    def __init__(self, hidden_dim=24, epochs=120, lr=2e-3, batch_size=32, val_fraction=0.15, random_state=42):
+    def __init__(self, hidden_dim=24, epochs=5, lr=2e-3, batch_size=32, val_fraction=0.15, random_state=42):
         torch.manual_seed(random_state)
         self.hidden_dim = hidden_dim
         self.net = MoodLSTM(hidden_dim=hidden_dim)
         self.train_losses = []
         self.val_losses = []
-        self._train(epochs, lr, batch_size, val_fraction, random_state)
+        if epochs > 0:
+            self._train(epochs, lr, batch_size, val_fraction, random_state)
 
     def _train(self, epochs, lr, batch_size, val_fraction, random_state):
         data = _generate_synthetic_vad_trajectories(n_sequences=1500, seq_len=6, random_state=random_state)
         n_val = int(len(data) * val_fraction)
-
         rng = np.random.default_rng(random_state)
         idx = rng.permutation(len(data))
         val_idx, train_idx = idx[:n_val], idx[n_val:]
@@ -1676,91 +993,22 @@ class MoodTemporalForecaster:
         self.net = MoodLSTM(hidden_dim=self.hidden_dim)
         self.net.load_state_dict(state["net_state_dict"])
 
-def evaluate_mood_temporal_forecaster():
-    print("=" * 85)
-    print(f"{'MOOD TEMPORAL LSTM FORECASTER BENCHMARK':^85}")
-    print("=" * 85)
 
-    print("Initializing & training MoodTemporalForecaster (150 epochs)...")
-    forecaster = MoodTemporalForecaster(hidden_dim=16, epochs=150, lr=1e-3, random_state=42)
-
-    train_init, train_final = forecaster.train_losses[0], forecaster.train_losses[-1]
-    val_init, val_final = forecaster.val_losses[0], forecaster.val_losses[-1]
-
-    print(f"\n1. Training & Validation Convergence")
-    print("-" * 85)
-    print(f"Training Loss (MSE):   {train_init:.4f} -> {train_final:.4f}")
-    print(f"Validation Loss (MSE): {val_init:.4f} -> {val_final:.4f}")
-
-    # --------------------------------------------------------------------------
-    # 1. SINGLE SEQUENCE COMPARISON (ILLUSTRATIVE)
-    # --------------------------------------------------------------------------
-    print("\n2. Single Sequence Illustrative Prediction")
-    print("-" * 85)
-    sample_seq = [
-        [0.10, -0.20, 0.30],
-        [0.15, -0.15, 0.35],
-        [0.22, -0.05, 0.40],
-        [0.30,  0.05, 0.42],
-        [0.38,  0.15, 0.45],
-        [0.45,  0.22, 0.48]  # Target next step
-    ]
-    pred_single = evaluate_forecaster_vs_baseline(forecaster, sample_seq, verbose=True)
-    target_single = np.array(sample_seq[-1])
-    print(f"Target VAD:     [{target_single[0]:+.2f}, {target_single[1]:+.2f}, {target_single[2]:+.2f}]")
-    print(f"Predicted VAD:  [{pred_single[0]:+.2f}, {pred_single[1]:+.2f}, {pred_single[2]:+.2f}]")
-
-    # --------------------------------------------------------------------------
-    # 2. HELD-OUT MULTI-SEQUENCE BENCHMARK (REAL EVALUATION)
-    # --------------------------------------------------------------------------
-    print("\n3. Multi-Sequence Benchmark vs 3-Day SMA Baseline")
-    print("-" * 85)
-    benchmark_results = evaluate_forecaster_multi_sequence(
-        forecaster, n_sequences=100, seq_len=6, random_state=999, verbose=True
-    )
-
-    # --------------------------------------------------------------------------
-    # 3. STATE PERSISTENCE CHECK
-    # --------------------------------------------------------------------------
-    print("\n4. State Serialization Check")
-    print("-" * 85)
-    state = forecaster.get_state()
-    restored = MoodTemporalForecaster(hidden_dim=16, epochs=0)
-    restored.load_state(state)
-    restored_pred = restored.predict(np.array(sample_seq[:-1], dtype=np.float32))
-    state_valid = np.allclose(pred_single, restored_pred, atol=1e-5)
-    print(f"Model Serialization (`get_state` / `load_state`): {'✓ Passed' if state_valid else '✗ Failed'}")
-
-    # --------------------------------------------------------------------------
-    # DIAGNOSTIC SUMMARY
-    # --------------------------------------------------------------------------
-    print("\n" + "=" * 85)
-    print("FORECASTER DIAGNOSTIC SUMMARY")
-    print("=" * 85)
-    win_rate = benchmark_results["win_rate"]
-    f_mean = benchmark_results["forecaster_mean"]
-    s_mean = benchmark_results["sma_mean"]
-
-    print(f"LSTM Average MSE:    {f_mean:.4f}")
-    print(f"Baseline SMA MSE:    {s_mean:.4f}")
-    print(f"Benchmark Win Rate:  {win_rate * 100:.1f}% against SMA")
-
-    if win_rate >= 0.65 and f_mean < s_mean:
-        print("✓ SUCCESS: LSTM forecaster outperforms simple moving average on unseen sequences.")
-    elif win_rate >= 0.50:
-        print("⚠ PARTIAL: Forecaster shows slight edge over baseline; variance remains high.")
-    else:
-        print("✗ WARNING: Forecaster underperforms simple moving average; treat as prototype.")
-    print("=" * 85)
+def evaluate_forecaster_vs_baseline(forecaster, history_vad_sequence, verbose=True):
+    if len(history_vad_sequence) < 4:
+        return np.array(history_vad_sequence[-1])
+    data = np.array(history_vad_sequence, dtype=np.float32)
+    inputs, target = data[:-1], data[-1]
+    pred = forecaster.predict(inputs)
+    sma_pred = data[-4:-1].mean(axis=0)
+    if verbose:
+        print(f"Forecaster MSE: {np.mean((pred - target) ** 2):.4f} | SMA MSE: {np.mean((sma_pred - target) ** 2):.4f}")
+    return pred
 
 
-# Run evaluation
-evaluate_mood_temporal_forecaster()
-
-
-STYLE_NAMES = ["cloud", "silk", "prism", "aurora", "ink", "nebula"]
-
-
+# ==============================================================================
+# 6. PROCEDURAL RENDERING & IMAGE CVAE ENGINE
+# ==============================================================================
 def _hex_to_rgb(hexcolor):
     h = hexcolor.lstrip("#")
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
@@ -1887,7 +1135,7 @@ _STYLE_BLUR_FRACTION = {
 }
 
 
-def render_abstract_art(palette_hex, seed=None, size=(640, 400), style="cloud", n_blobs=None, blur_radius=None):
+def render_abstract_art(palette_hex, seed=None, size=(640, 400), style="cloud", blur_radius=None):
     if style not in _STYLE_LAYERS:
         style = "cloud"
     rgb_palette = [_hex_to_rgb(c) for c in palette_hex]
@@ -1900,7 +1148,6 @@ def render_abstract_art(palette_hex, seed=None, size=(640, 400), style="cloud", 
         rng = random.Random()
 
     base = _STYLE_LAYERS[style](size, rgb_palette, rng)
-
     if blur_radius is None:
         blur_radius = max(1, int(min(w, h) * _STYLE_BLUR_FRACTION[style]))
     blurred = base.filter(ImageFilter.GaussianBlur(radius=blur_radius))
@@ -1932,7 +1179,6 @@ def render_meditation_gif(palette_hex, seed=None, size=(640, 400), style="cloud"
     w, h = size
     seed_int = int(hashlib.sha256(str(seed if seed is not None else random.random()).encode()).hexdigest(), 16) % (2**32)
     blur_radius = max(1, int(min(w, h) * _STYLE_BLUR_FRACTION[style]))
-
     base_seed = seed_int
     sharpen_percent = 60 if style in ("prism", "ink") else 140
     frames = []
@@ -1950,7 +1196,6 @@ def render_meditation_gif(palette_hex, seed=None, size=(640, 400), style="cloud"
 
 
 def frames_to_gif_bytes(frames, duration_ms=90):
-    import io
     buf = io.BytesIO()
     frames[0].save(
         buf, format="GIF", save_all=True, append_images=frames[1:],
@@ -1959,692 +1204,6 @@ def frames_to_gif_bytes(frames, duration_ms=90):
     buf.seek(0)
     return buf.getvalue()
 
-def evaluate_art_rendering_pipeline():
-    print("=" * 85)
-    print(f"{'ABSTRACT ART RENDERING & ANIMATION ENGINE EVALUATION':^85}")
-    print("=" * 85)
-
-    sample_palette = ["#1a0933", "#561d5e", "#c44569", "#f8a5c2"]
-    test_seed = "journal_entry_2026_08_25"
-    target_size = (640, 400)
-    thumb_size = (120, 120)
-
-    # --------------------------------------------------------------------------
-    # 1. STYLE LAYER INTEGRITY & DETERMINISM TEST
-    # --------------------------------------------------------------------------
-    print("\n1. Style Layer Generation & Determinism Check")
-    print("-" * 85)
-    print(
-        f"{'Style':<10} | {'Output Size':<12} | {'Mode':<6} | {'Render Time':<14} | {'Seed Determinism':<16}"
-    )
-    print("-" * 85)
-
-    style_success_count = 0
-    non_blank_count = 0
-
-    for style in STYLE_NAMES:
-        t0 = time.perf_counter()
-        img1 = render_abstract_art(
-            sample_palette, seed=test_seed, size=target_size, style=style
-        )
-        t_render = (time.perf_counter() - t0) * 1000
-
-        # Determinism check (same seed must produce exact identical image array)
-        img2 = render_abstract_art(
-            sample_palette, seed=test_seed, size=target_size, style=style
-        )
-        arr1 = np.array(img1)
-        arr2 = np.array(img2)
-        is_deterministic = np.array_equal(arr1, arr2)
-
-        # Non-blank / dynamic range check (std > 0 across canvas)
-        has_variance = arr1.std() > 5.0
-        if has_variance:
-            non_blank_count += 1
-        if is_deterministic and img1.size == target_size:
-            style_success_count += 1
-
-        det_str = "✓ Exact Match" if is_deterministic else "✗ Non-deterministic"
-        print(
-            f"{style:<10} | {str(img1.size):<12} | {img1.mode:<6} | {t_render:>6.2f} ms     | {det_str:<16}"
-        )
-
-    # --------------------------------------------------------------------------
-    # 2. THUMBNAIL RENDERING BENCHMARK
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("2. Thumbnail Generator Check (`render_thumbnail`)")
-    print("-" * 85)
-
-    t0 = time.perf_counter()
-    thumb = render_thumbnail(
-        sample_palette, seed=test_seed, size=thumb_size, style="prism"
-    )
-    t_thumb = (time.perf_counter() - t0) * 1000
-    thumb_valid = thumb.size == thumb_size and thumb.mode == "RGB"
-
-    print(
-        f"Thumbnail Rendered: Size={thumb.size} | Mode={thumb.mode} | Time={t_thumb:.2f} ms | Status={'✓ Passed' if thumb_valid else '✗ Failed'}"
-    )
-
-    # --------------------------------------------------------------------------
-    # 3. MEDITATION GIF & MEMORY SERIALIZATION TEST
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("3. Meditation GIF Engine (`render_meditation_gif` & Byte Buffer)")
-    print("-" * 85)
-
-    n_frames = 12
-    t0 = time.perf_counter()
-    frames = render_meditation_gif(
-        sample_palette,
-        seed=test_seed,
-        size=(320, 200),
-        style="aurora",
-        n_frames=n_frames,
-    )
-    gif_bytes = frames_to_gif_bytes(frames, duration_ms=90)
-    t_gif = (time.perf_counter() - t0) * 1000
-
-    byte_size_kb = len(gif_bytes) / 1024
-    gif_valid = len(frames) == n_frames and byte_size_kb > 10.0
-
-    print(f"Total Frames Rendered:      {len(frames)}/{n_frames}")
-    print(f"GIF In-Memory Stream Size:  {byte_size_kb:.2f} KB")
-    print(f"Full Animation Build Time:  {t_gif:.2f} ms")
-    print(f"Stream Status:              {'✓ Valid GIF stream' if gif_valid else '✗ Invalid stream'}")
-
-    # --------------------------------------------------------------------------
-    # 4. FALLBACK & ERROR GUARDRAILS
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("4. Fallback Handling")
-    print("-" * 85)
-
-    fallback_img = render_abstract_art(
-        sample_palette, seed=123, style="non_existent_style"
-    )
-    fallback_passed = (
-        fallback_img.size == target_size and fallback_img.mode == "RGB"
-    )
-    print(
-        f"Unrecognized Style Fallback ('non_existent_style' -> 'cloud'): {'✓ Handled safely' if fallback_passed else '✗ Failed'}"
-    )
-
-    # --------------------------------------------------------------------------
-    # DIAGNOSTIC SUMMARY
-    # --------------------------------------------------------------------------
-    print("\n" + "=" * 85)
-    print("ENGINE DIAGNOSTIC SUMMARY")
-    print("=" * 85)
-    print(
-        f"Supported Procedural Styles: {style_success_count}/{len(STYLE_NAMES)} functional & deterministic"
-    )
-    print(
-        f"Canvas Dynamic Range:        {non_blank_count}/{len(STYLE_NAMES)} non-blank canvases"
-    )
-    print(
-        f"GIF Memory Serialization:    {'✓ Passed' if gif_valid else '✗ Failed'}"
-    )
-
-    if (
-        style_success_count == len(STYLE_NAMES)
-        and gif_valid
-        and fallback_passed
-    ):
-        print(
-            "✓ SUCCESS: Procedural canvas generation, filters, and animation pipelines operate error-free."
-        )
-    else:
-        print("⚠ NOTE: Review styling layers or image filter parameters.")
-    print("=" * 85)
-
-
-# Run evaluation
-evaluate_art_rendering_pipeline()
-
-
-
-USER_DIR = os.environ.get(
-    "MOOD_APP_DATA_DIR",
-    os.path.join(os.path.dirname(__file__) if "__file__" in globals() else os.getcwd(), "user_data")
-)
-
-
-def user_dir(user_id):
-    d = os.path.join(USER_DIR, user_id)
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
-def _user_path(user_id, filename):
-    return os.path.join(user_dir(user_id), filename)
-
-
-def _model_state_to_b64(obj):
-    """Serializes a model's get_state() (including any torch tensors --
-    pickle handles those natively) to a base64 string, so it can go in a
-    plain Supabase text column the same way palettes already go in as JSON."""
-    return base64.b64encode(pickle.dumps(obj.get_state())).decode("ascii")
-
-
-def _model_state_from_b64(b64_str):
-    return pickle.loads(base64.b64decode(b64_str))
-
-
-def _load_pickle(path, cls, *init_args, user_id=None, model_name=None, **init_kwargs):
-    """
-    Previously local-disk only (`path`). On Streamlit Community Cloud the
-    container filesystem is wiped on every redeploy, so every trained
-    classifier/CVAE/image model was silently lost each time -- unlike diary
-    entries, which already went through Supabase. This adds the same
-    Supabase-backed durability for model state, keyed by (user_id,
-    model_name). Requires a `model_state` table -- see the SQL comment
-    below `_get_supabase_client()`. Falls back to local disk, then to a
-    fresh model, exactly as before, if Supabase isn't configured or the
-    table doesn't exist yet.
-    """
-    supabase = _get_supabase_client()
-    if supabase and user_id and model_name:
-        try:
-            res = (supabase.table("model_state").select("state_b64")
-                   .eq("user_id", user_id).eq("model_name", model_name).execute())
-            if res.data:
-                obj = cls.__new__(cls)
-                obj.load_state(_model_state_from_b64(res.data[0]["state_b64"]))
-                return obj
-        except Exception as e:
-            print(f"WARNING: Supabase model-state read failed ({model_name}): {e}")
-
-    if os.path.exists(path):
-        obj = cls.__new__(cls)
-        with open(path, "rb") as f:
-            state = pickle.load(f)
-        obj.load_state(state)
-        return obj
-
-    obj = cls(*init_args, **init_kwargs)
-    _save_pickle(path, obj, user_id=user_id, model_name=model_name)
-    return obj
-
-
-def _save_pickle(path, obj, user_id=None, model_name=None):
-    with open(path, "wb") as f:
-        pickle.dump(obj.get_state(), f)
-
-    supabase = _get_supabase_client()
-    if supabase and user_id and model_name:
-        try:
-            supabase.table("model_state").upsert({
-                "user_id": user_id,
-                "model_name": model_name,
-                "state_b64": _model_state_to_b64(obj),
-            }, on_conflict="user_id,model_name").execute()
-        except Exception as e:
-            print(f"WARNING: Supabase model-state write failed ({model_name}): {e}")
-
-
-def load_diary_classifier(user_id):
-    return _load_pickle(_user_path(user_id, "diary_classifier.pkl"), DiaryMoodClassifier,
-                         user_id=user_id, model_name="diary_classifier")
-
-
-def save_diary_classifier(user_id, clf):
-    _save_pickle(_user_path(user_id, "diary_classifier.pkl"), clf, user_id=user_id, model_name="diary_classifier")
-
-
-def load_art_model(user_id):
-    return _load_pickle(_user_path(user_id, "art_model.pkl"), ArtColorModel,
-                         user_id=user_id, model_name="art_model")
-
-
-def save_art_model(user_id, model):
-    _save_pickle(_user_path(user_id, "art_model.pkl"), model, user_id=user_id, model_name="art_model")
-
-
-GLOBAL_MODEL_USER = "__global__"  # reserved pseudo-user id for the shared CVAE baseline checkpoint
-
-
-def _model_state_exists(path, user_id, model_name):
-    if os.path.exists(path):
-        return True
-    supabase = _get_supabase_client()
-    if supabase:
-        try:
-            res = (supabase.table("model_state").select("model_name")
-                   .eq("user_id", user_id).eq("model_name", model_name).limit(1).execute())
-            return bool(res.data)
-        except Exception:
-            return False
-    return False
-
-
-def load_cvae_model(user_id):
-    """
-    Existing users load their own saved state, exactly as before.
-
-    NEW: a brand-new user (no saved CVAE state of their own yet) seeds from
-    the GLOBAL checkpoint (GLOBAL_MODEL_USER) if one exists, instead of
-    always starting from pure synthetic-only training. The global
-    checkpoint is refreshed opportunistically -- whenever ANY user's
-    periodic retrain fires (every 10th real correction), that
-    freshly-retrained model is also pushed to the global slot (see the
-    three call sites that push to GLOBAL_MODEL_USER after
-    maybe_periodic_retrain()).
-
-    This is NOT a true multi-user aggregate -- it doesn't merge different
-    users' corrections into one training pass. It's simpler: a new user
-    inherits whichever model was most recently refreshed by someone's
-    periodic retrain, then is saved under their OWN user_id immediately and
-    evolves independently from that point on -- they are not continuously
-    synced to the global checkpoint after this initial seed. Scoped to the
-    CVAE only (the actual reported problem); the classifier, ArtColorModel,
-    and GenerativeArtImageModel are untouched and still cold-start fresh
-    per user.
-    """
-    own_path = _user_path(user_id, "cvae_model.pkl")
-    if _model_state_exists(own_path, user_id, "cvae_model"):
-        return _load_pickle(own_path, CVAEArtModel, epochs=80, user_id=user_id, model_name="cvae_model")
-
-    global_path = _user_path(GLOBAL_MODEL_USER, "cvae_model.pkl")
-    if _model_state_exists(global_path, GLOBAL_MODEL_USER, "cvae_model"):
-        model = _load_pickle(global_path, CVAEArtModel, epochs=80,
-                              user_id=GLOBAL_MODEL_USER, model_name="cvae_model")
-        save_cvae_model(user_id, model)  # fork immediately -- independent from here on
-        return model
-
-    return _load_pickle(own_path, CVAEArtModel, epochs=80, user_id=user_id, model_name="cvae_model")
-
-
-def save_cvae_model(user_id, model):
-    _save_pickle(_user_path(user_id, "cvae_model.pkl"), model, user_id=user_id, model_name="cvae_model")
-
-
-def seed_global_cvae_checkpoint(epochs=80, steps_per_category=30, verbose=True):
-    """
-    Pre-seeds GLOBAL_MODEL_USER's CVAE checkpoint by fine-tuning across ALL
-    real categories in one deliberate pass, instead of waiting for real
-    corrections to incidentally cover a spread of moods before the periodic
-    retrain threshold fires. Run this ONCE, before real users arrive --
-    every brand-new user's first "Auto (detected)" palette will then start
-    from this differentiated baseline via load_cvae_model()'s global-seed
-    fallback, instead of the raw synthetic-only baseline.
-
-    Uses each category's own CATEGORY_CORRECTION_DEFS entry as the ground
-    truth (same reference palette real corrections already train toward),
-    so this is not a shortcut around the real mechanism -- it's the same
-    fine_tune() call the UI makes, just run for every category at once
-    instead of waiting on incidental usage.
-
-    Requires SUPABASE_URL/SUPABASE_KEY to be set in THIS environment to the
-    SAME project your deployed app uses -- otherwise this only writes to a
-    local file the deployed app will never see.
-    """
-    supabase = _get_supabase_client()
-    if supabase is None:
-        print("WARNING: no Supabase client in this environment (SUPABASE_URL/SUPABASE_KEY not set).")
-        print("This will only save locally -- the deployed app will NOT see it. Set the same")
-        print("SUPABASE_URL/SUPABASE_KEY here as in your Streamlit secrets before running this.")
-
-    model = CVAEArtModel(epochs=epochs)  # fresh synthetic-only start, same as any new user gets
-
-    if verbose:
-        print(f"Seeding across {len(CATEGORIES)} categories, {steps_per_category} steps each...")
-
-    for category in CATEGORIES:
-        d = CATEGORY_CORRECTION_DEFS[category]
-        real_dominance = CATEGORY_ANCHORS_VAD[category][2]  # real anchor value, not a placeholder
-        vad = {"valence": d["valence"], "arousal": d["energy01"] * 2 - 1, "dominance": real_dominance,
-               "clarity": d["clarity"], "turbulence": d["turbulence"]}
-        target_hex = category_correction_palette(category)
-        model.fine_tune(vad, target_hex, steps=steps_per_category)
-        if verbose:
-            print(f"  {category:12s} -> {target_hex}")
-
-    # A real batch retrain over everything just added, same mechanism as
-    # maybe_periodic_retrain() -- not the incidental-usage %10 trigger,
-    # since this is a deliberate one-time seed, not simulated real usage.
-    loss_before, loss_after = model._train(epochs=60, lr=1e-3, verbose=verbose)
-    if verbose:
-        print(f"Batch retrain: loss {loss_before:.4f} -> {loss_after:.4f}")
-        print(f"n_real_corrections after seeding: {model.n_real_corrections}")
-
-    save_cvae_model(GLOBAL_MODEL_USER, model)
-    if verbose:
-        print(f"Saved to GLOBAL_MODEL_USER ('{GLOBAL_MODEL_USER}'). New users will now seed from this.")
-    return model
-
-
-def load_image_art_model(user_id):
-    return _load_pickle(_user_path(user_id, "image_art_model.pkl"),
-                         GenerativeArtImageModel, n_synthetic_samples=360, epochs=55,
-                         user_id=user_id, model_name="image_art_model")
-
-
-def save_image_art_model(user_id, model):
-    _save_pickle(_user_path(user_id, "image_art_model.pkl"), model, user_id=user_id, model_name="image_art_model")
-
-
-DB_PATH = os.path.join(USER_DIR, "analysis.db")
-
-
-def _get_db():
-    os.makedirs(USER_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS diary_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            date TEXT NOT NULL,
-            text TEXT NOT NULL,
-            valence REAL, arousal REAL, dominance REAL,
-            clarity REAL, turbulence REAL,
-            top_category TEXT,
-            corrected_category TEXT,
-            reading TEXT, style TEXT,
-            palette TEXT,
-            logged_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(diary_entries)")}
-    if "corrected_category" not in existing_cols:
-        conn.execute("ALTER TABLE diary_entries ADD COLUMN corrected_category TEXT")
-    return conn
-
-
-try:
-    from supabase import create_client
-except ImportError:
-    create_client = None
-
-
-def _get_supabase_client():
-    if create_client is None:
-        return None
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    if url and key:
-        return create_client(url, key)
-    return None
-
-
-def load_entry_history(user_id):
-    supabase = _get_supabase_client()
-    if supabase:
-        try:
-            res = (supabase.table("diary_entries").select("*").eq("user_id", user_id)
-                   .order("logged_at").execute())  # deterministic order -- Archive position
-            data = res.data or []                  # must be stable across reruns
-            for row in data:
-                if isinstance(row.get("palette"), str):
-                    row["palette"] = json.loads(row["palette"])
-            return data
-        except Exception as e:
-            print(f"Error fetching from cloud DB: {e}")
-
-    path = _user_path(user_id, "entries.json")
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return []
-
-
-def append_entry(user_id, entry):
-    """
-    Returns (history, cloud_status): cloud_status is "saved" (Supabase write
-    succeeded), "local_only" (no Supabase client configured -- keys missing),
-    or an error string (Supabase configured but the write failed -- most
-    commonly this means the table doesn't exist yet, or an RLS policy is
-    blocking it). Surfaced directly in the UI so this doesn't require
-    reading server logs or manually refreshing the Supabase dashboard to
-    debug -- both of which have proven slow and inconclusive so far.
-
-    Assigns entry["entry_id"] (a client-generated UUID) BEFORE writing
-    anywhere -- this is what makes a later correction (update_entry) able to
-    target this exact row in either storage backend. Supabase's own auto
-    `id` column isn't usable for this: local-only entries never get one,
-    since they never pass through Supabase at all.
-    """
-    if "entry_id" not in entry:
-        entry["entry_id"] = str(uuid.uuid4())
-
-    history = load_entry_history(user_id)
-    history.append(entry)
-
-    supabase = _get_supabase_client()
-    cloud_status = "local_only"
-    if supabase:
-        try:
-            db_row = {
-                "user_id": user_id,
-                "entry_id": entry.get("entry_id"),
-                "date": entry.get("date"),
-                "text": entry.get("text"),
-                "valence": entry.get("valence"),
-                "arousal": entry.get("arousal"),
-                "dominance": entry.get("dominance"),
-                "clarity": entry.get("clarity"),
-                "turbulence": entry.get("turbulence"),
-                "top_category": entry.get("top_category"),
-                "corrected_category": entry.get("corrected_category"),
-                "reading": entry.get("reading"),
-                "style": entry.get("style"),
-                "palette": entry.get("palette")
-            }
-            supabase.table("diary_entries").insert(db_row).execute()
-            cloud_status = "saved"
-        except Exception as e:
-            print(f"WARNING: Supabase write failed: {e}")
-            cloud_status = str(e)
-
-    with open(_user_path(user_id, "entries.json"), "w") as f:
-        json.dump(history, f, indent=2)
-
-    return history, cloud_status
-
-
-def update_entry(user_id, entry, updates):
-    """
-    Applies `updates` (e.g. {"corrected_category": "joy", "palette": [...]})
-    to one existing entry, in BOTH storage backends. This is what "Correct
-    this entry" was missing entirely -- it updated the classifier/CVAE but
-    never wrote the correction back to the entry record itself, so the
-    Archive view (and any report evidence pulled from it) never reflected
-    what was actually corrected.
-
-    Matches by entry["entry_id"] when present (all entries created after
-    this patch). Falls back to matching on (user_id, date, text) for older
-    rows that predate entry_id existing at all -- reasonably unique in
-    practice, but not guaranteed if you sealed two identical entries on the
-    same day.
-
-    Returns cloud_status, same convention as append_entry.
-    """
-    entry_id = entry.get("entry_id")
-    supabase = _get_supabase_client()
-    cloud_status = "local_only"
-
-    if supabase:
-        try:
-            q = supabase.table("diary_entries").update(updates).eq("user_id", user_id)
-            if entry_id:
-                q = q.eq("entry_id", entry_id)
-            else:
-                q = q.eq("date", entry.get("date")).eq("text", entry.get("text"))
-            q.execute()
-            cloud_status = "saved"
-        except Exception as e:
-            print(f"WARNING: Supabase update failed: {e}")
-            cloud_status = str(e)
-
-    path = _user_path(user_id, "entries.json")
-    if os.path.exists(path):
-        with open(path) as f:
-            local_history = json.load(f)
-        for row in local_history:
-            matches = (row.get("entry_id") == entry_id if entry_id
-                       else row.get("date") == entry.get("date") and row.get("text") == entry.get("text"))
-            if matches:
-                row.update(updates)
-        with open(path, "w") as f:
-            json.dump(local_history, f, indent=2)
-
-
-def evaluate_persistence_layer():
-    print("=" * 85)
-    print(f"{'PERSISTENCE, CACHING & MULTI-USER STORAGE EVALUATION':^85}")
-    print("=" * 85)
-
-    test_user_id = f"test_user_{uuid.uuid4().hex[:8]}"
-
-    # --------------------------------------------------------------------------
-    # 1. DIRECTORY ISOLATION CHECK
-    # --------------------------------------------------------------------------
-    print("\n1. User Directory Sandbox Integrity")
-    print("-" * 85)
-
-    u_path = user_dir(test_user_id)
-    exists = os.path.exists(u_path) and os.path.isdir(u_path)
-    print(f"Target Sandbox Path: {u_path}")
-    print(f"Sandbox Directory Created: {'✓ Passed' if exists else '✗ Failed'}")
-
-    # --------------------------------------------------------------------------
-    # 2. BASE64 SERIALIZATION / DESERIALIZATION CHECK
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("2. Base64 Model State Serialization (`_model_state_to_b64`)")
-    print("-" * 85)
-
-    # Dummy class emulating get_state / load_state interfaces
-    class MockSerializableModel:
-        def __init__(self, val=42):
-            self.val = val
-            self.weights = np.array([0.1, 0.5, 0.9])
-
-        def get_state(self):
-            return {"val": self.val, "weights": self.weights}
-
-        def load_state(self, state):
-            self.val = state["val"]
-            self.weights = state["weights"]
-
-    orig_model = MockSerializableModel(val=100)
-    b64_str = _model_state_to_b64(orig_model)
-    deserialized_state = _model_state_from_b64(b64_str)
-
-    b64_valid = (
-        deserialized_state["val"] == 100
-        and np.allclose(deserialized_state["weights"], orig_model.weights)
-    )
-    print(f"Base64 String Length: {len(b64_str)} chars")
-    print(f"State Round-Trip Fidelity: {'✓ Exact Match' if b64_valid else '✗ Deserialization Error'}")
-
-    # --------------------------------------------------------------------------
-    # 3. LOCAL FILE PICKLE CACHING & COLD START
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("3. Local Model Cache Persistence (`_load_pickle` / `_save_pickle`)")
-    print("-" * 85)
-
-    model_cache_path = _user_path(test_user_id, "mock_model.pkl")
-    _save_pickle(model_cache_path, orig_model, user_id=test_user_id, model_name="mock_model")
-
-    # Load back via _load_pickle
-    loaded_model = _load_pickle(model_cache_path, MockSerializableModel, user_id=test_user_id, model_name="mock_model")
-    pickle_valid = loaded_model.val == 100 and os.path.exists(model_cache_path)
-    print(f"Pickle File Exists on Disk: {os.path.exists(model_cache_path)}")
-    print(f"Restored Object Integrity:  {'✓ Passed' if pickle_valid else '✗ Failed'}")
-
-    # --------------------------------------------------------------------------
-    # 4. ENTRY CREATION, UPDATE & FALLBACK
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("4. Diary Entry Logging, UUID Tracking & Patch Updates")
-    print("-" * 85)
-
-    sample_entry = {
-        "date": "2026-08-25",
-        "text": "Quiet evening reading by the window, feeling peaceful.",
-        "valence": 0.65, "arousal": -0.45, "dominance": 0.40,
-        "clarity": 0.85, "turbulence": 0.05,
-        "top_category": "calm",
-        "corrected_category": None,
-        "reading": "Settling into quiet ground",
-        "style": "cloud",
-        "palette": ["#1a0933", "#561d5e", "#c44569", "#f8a5c2"]
-    }
-
-    # Append
-    history, append_status = append_entry(test_user_id, sample_entry)
-    entry_id = sample_entry.get("entry_id")
-    append_ok = len(history) == 1 and entry_id is not None
-
-    print(f"Entry Logged (UUID: {entry_id[:8]}...): {'✓ Saved' if append_ok else '✗ Failed'}")
-    print(f"Cloud Storage Status (append):        [{append_status}]")
-
-    # Update / Correction
-    update_patch = {"corrected_category": "joy", "palette": ["#2b1055", "#7597de", "#b9d5ff", "#ffffff"]}
-    update_status = update_entry(test_user_id, sample_entry, update_patch)
-    updated_history = load_entry_history(test_user_id)
-
-    update_ok = (
-        len(updated_history) > 0
-        and updated_history[0].get("corrected_category") == "joy"
-        and updated_history[0].get("palette") == update_patch["palette"]
-    )
-
-    print(f"Entry Correction Applied:              {'✓ Verified in history' if update_ok else '✗ Failed'}")
-    print(f"Cloud Storage Status (update):        [{update_status}]")
-
-    # --------------------------------------------------------------------------
-    # 5. SQLITE LOCAL DATABASE TABLE CHECK
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("5. Local SQLite Database Schema & Migration Check (`_get_db`)")
-    print("-" * 85)
-
-    conn = _get_db()
-    cursor = conn.cursor()
-    columns = [row[1] for row in cursor.execute("PRAGMA table_info(diary_entries)").fetchall()]
-    conn.close()
-
-    has_required_cols = all(
-        col in columns for col in ["user_id", "date", "text", "top_category", "corrected_category", "palette"]
-    )
-    print(f"SQLite DB Created at:       {DB_PATH}")
-    print(f"Columns Verified ({len(columns)} total): {'✓ Passed (including corrected_category)' if has_required_cols else '✗ Missing columns'}")
-
-    # --------------------------------------------------------------------------
-    # CLEANUP & DIAGNOSTIC SUMMARY
-    # --------------------------------------------------------------------------
-    # Cleanup temporary test files
-    try:
-        if os.path.exists(_user_path(test_user_id, "entries.json")):
-            os.remove(_user_path(test_user_id, "entries.json"))
-        if os.path.exists(model_cache_path):
-            os.remove(model_cache_path)
-        if os.path.exists(u_path):
-            os.rmdir(u_path)
-    except Exception:
-        pass
-
-    print("\n" + "=" * 85)
-    print("PERSISTENCE LAYER SUMMARY")
-    print("=" * 85)
-    print(f"Base64 Model Compression:    {'✓ Functional' if b64_valid else '✗ Failed'}")
-    print(f"Local Storage Fallbacks:     {'✓ Functional' if pickle_valid and append_ok and update_ok else '✗ Failed'}")
-    print(f"Cloud Integration Handling:  ✓ Dual-mode active (local JSON fallback supported)")
-
-    if b64_valid and pickle_valid and append_ok and update_ok and has_required_cols:
-        print("✓ SUCCESS: Persistence layer handles user sandboxing, entry updating, and state caching.")
-    else:
-        print("⚠ NOTE: Review file path permissions or Supabase credentials.")
-    print("=" * 85)
-
-
-# Run evaluation
-evaluate_persistence_layer()
-     
 
 IMG_SIZE = 48
 IMG_VAD_DIM = 5
@@ -2725,14 +1284,15 @@ def _image_cvae_loss(recon, x, mu, logvar, beta=0.0005):
 
 
 class GenerativeArtImageModel:
-    def __init__(self, n_synthetic_samples=480, epochs=70, lr=1e-3, random_state=42):
+    def __init__(self, n_synthetic_samples=480, epochs=2, lr=1e-3, random_state=42):
         torch.manual_seed(random_state)
         self.net = _ImageCVAENet()
         self.mapper = EmotionalMapper()
         self.n_synthetic_samples = n_synthetic_samples
         self.n_real_examples = 0
         self._X, self._C = self._build_synthetic_dataset(n_synthetic_samples, random_state)
-        self._train(epochs, lr, verbose=False)
+        if epochs > 0:
+            self._train(epochs, lr, verbose=False)
 
     def _build_synthetic_dataset(self, n, random_state):
         rng = np.random.default_rng(random_state)
@@ -2743,10 +1303,8 @@ class GenerativeArtImageModel:
             raw = rng.dirichlet(np.ones(11) * concentration)
             posterior = dict(zip(CATEGORIES, raw))
             mapped = self.mapper.map(posterior)
-            vad = [mapped["valence"], mapped["arousal"], mapped["dominance"], mapped["clarity"], mapped["turbulence"]]
-            cond = vad + _style_onehot(style)
-
-            theme_scores = _theme_scores_from_posterior(posterior, rng)  # was _random_theme_scores(rng) -- see docstring
+            cond = [mapped["valence"], mapped["arousal"], mapped["dominance"], mapped["clarity"], mapped["turbulence"]] + _style_onehot(style)
+            theme_scores = _theme_scores_from_posterior(posterior, rng)
             energy01 = (mapped["arousal"] + 1) / 2
             palette_raw = deterministic_palette(mapped["valence"], energy01, mapped["clarity"], mapped["turbulence"], theme_scores)
             palette_hex = ["#{:02x}{:02x}{:02x}".format(*(np.clip(s, 0, 1) * 255).astype(int)) for s in palette_raw.reshape(4, 3)]
@@ -2804,7 +1362,7 @@ class GenerativeArtImageModel:
 
     @staticmethod
     def _tensor_to_image(t, upscale_to=240):
-        arr = (t.clamp(0, 1).detach().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+        arr = (t.clamp(0, 1).detach().cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
         img = Image.fromarray(arr, "RGB")
         return img.resize((upscale_to, upscale_to), Image.BICUBIC)
 
@@ -2857,287 +1415,277 @@ class GenerativeArtImageModel:
         self._C = torch.cat([self._C, cond], dim=0)
         self.n_real_examples = getattr(self, "n_real_examples", 0) + 1
 
-def evaluate_generative_art_image_model():
-    print("=" * 85)
-    print(f"{'CONVOLUTIONAL IMAGE CVAE ARCHITECTURE & GENERATION EVALUATION':^85}")
-    print("=" * 85)
 
-    # --------------------------------------------------------------------------
-    # 1. ARCHITECTURE TENSOR DIMENSION & LAYER CHECKS
-    # --------------------------------------------------------------------------
-    print("\n1. Architecture Forward Pass & Shape Diagnostics")
-    print("-" * 85)
+# ==============================================================================
+# 7. MULTI-USER STORAGE & CACHED LOADERS
+# ==============================================================================
+USER_DIR = os.environ.get(
+    "MOOD_APP_DATA_DIR",
+    os.path.join(os.path.dirname(__file__) if "__file__" in globals() else os.getcwd(), "user_data")
+)
 
-    net = _ImageCVAENet()
-    test_batch_size = 4
-    dummy_x = torch.randn(test_batch_size, 3, IMG_SIZE, IMG_SIZE)
-    dummy_c = torch.randn(test_batch_size, IMG_COND_DIM)
 
-    # Encoder check
-    mu, logvar = net.encoder(dummy_x, dummy_c)
-    enc_shape_ok = mu.shape == (test_batch_size, IMG_LATENT_DIM) and logvar.shape == (
-        test_batch_size,
-        IMG_LATENT_DIM,
-    )
+def user_dir(user_id):
+    d = os.path.join(USER_DIR, user_id)
+    os.makedirs(d, exist_ok=True)
+    return d
 
-    # Reparameterization check
-    z = net.reparameterize(mu, logvar)
-    z_shape_ok = z.shape == (test_batch_size, IMG_LATENT_DIM)
 
-    # Decoder check
-    recon = net.decoder(z, dummy_c)
-    dec_shape_ok = recon.shape == (test_batch_size, 3, IMG_SIZE, IMG_SIZE)
+def _user_path(user_id, filename):
+    return os.path.join(user_dir(user_id), filename)
 
-    # Loss computation check
-    loss, recon_l, kl_l = _image_cvae_loss(recon, dummy_x, mu, logvar)
-    loss_valid = not (torch.isnan(loss) or torch.isinf(loss))
 
-    print(
-        f"Condition Vector Dimension:      {IMG_COND_DIM} ({IMG_VAD_DIM} VAD + {IMG_STYLE_DIM} Style One-Hot)"
-    )
-    print(f"Latent Bottleneck Dimension:     {IMG_LATENT_DIM}")
-    print(
-        f"Input / Reconstruction Shape:    {list(dummy_x.shape)} -> {list(recon.shape)} {'✓' if dec_shape_ok else '✗'}"
-    )
-    print(
-        f"Latent mu / logvar Tensor Shape: {list(mu.shape)} {'✓' if enc_shape_ok else '✗'}"
-    )
-    print(
-        f"Loss Pipeline Sanity:            Total={loss.item():.4f} (Recon={recon_l:.4f}, KL={kl_l:.4f}) {'✓' if loss_valid else '✗'}"
-    )
+def _model_state_to_b64(obj):
+    return base64.b64encode(pickle.dumps(obj.get_state())).decode("ascii")
 
-    # --------------------------------------------------------------------------
-    # 2. FAST MODEL INSTANTIATION & DATA SUMMARY
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("2. Model Training & Synthetic Image Dataset Initialization")
-    print("-" * 85)
 
-    n_samples = 48  # Lightweight batch for quick evaluation
-    epochs = 15
+def _model_state_from_b64(b64_str):
+    return pickle.loads(base64.b64decode(b64_str))
 
-    t0 = time.perf_counter()
-    model = GenerativeArtImageModel(
-        n_synthetic_samples=n_samples, epochs=epochs, lr=2e-3, random_state=42
-    )
-    t_train = time.perf_counter() - t0
 
-    summary = model.data_summary()
-    print(f"Dataset Size:           {summary['total_training_examples']} images")
-    print(f"Image Tensor Dataset:   {list(model._X.shape)}")
-    print(f"Condition Tensor:       {list(model._C.shape)}")
-    print(
-        f"Training Execution:     {epochs} epochs completed in {t_train:.2f}s"
-    )
+def _load_pickle(path, cls, *init_args, user_id=None, model_name=None, **init_kwargs):
+    supabase = _get_supabase_client()
+    if supabase and user_id and model_name:
+        try:
+            res = (supabase.table("model_state").select("state_b64")
+                   .eq("user_id", user_id).eq("model_name", model_name).execute())
+            if res.data:
+                obj = cls.__new__(cls)
+                obj.load_state(_model_state_from_b64(res.data[0]["state_b64"]))
+                return obj
+        except Exception as e:
+            print(f"WARNING: Supabase model-state read failed ({model_name}): {e}")
 
-    # --------------------------------------------------------------------------
-    # 3. MULTI-STYLE IMAGE SAMPLING DIVERSITY
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("3. Visual Output Sampling Across Styles (`sample`)")
-    print("-" * 85)
-    print(
-        f"{'Style':<10} | {'Output Size':<12} | {'Mode':<6} | {'Channel Min/Max':<18} | {'Canvas Std Dev':<14}"
-    )
-    print("-" * 85)
+    if os.path.exists(path):
+        obj = cls.__new__(cls)
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+        obj.load_state(state)
+        return obj
 
-    sample_mood = {
-        "valence": 0.65,
-        "arousal": -0.40,
-        "dominance": 0.50,
-        "clarity": 0.80,
-        "turbulence": 0.10,
-    }
+    obj = cls(*init_args, **init_kwargs)
+    _save_pickle(path, obj, user_id=user_id, model_name=model_name)
+    return obj
 
-    all_styles_valid = True
-    for style in STYLE_NAMES:
-        imgs = model.sample(
-            sample_mood, style=style, n_samples=1, upscale_to=120
+
+def _save_pickle(path, obj, user_id=None, model_name=None):
+    with open(path, "wb") as f:
+        pickle.dump(obj.get_state(), f)
+
+    supabase = _get_supabase_client()
+    if supabase and user_id and model_name:
+        try:
+            supabase.table("model_state").upsert({
+                "user_id": user_id,
+                "model_name": model_name,
+                "state_b64": _model_state_to_b64(obj),
+            }, on_conflict="user_id,model_name").execute()
+        except Exception as e:
+            print(f"WARNING: Supabase model-state write failed ({model_name}): {e}")
+
+
+def load_diary_classifier(user_id):
+    return _load_pickle(_user_path(user_id, "diary_classifier.pkl"), DiaryMoodClassifier,
+                         user_id=user_id, model_name="diary_classifier")
+
+
+def save_diary_classifier(user_id, clf):
+    _save_pickle(_user_path(user_id, "diary_classifier.pkl"), clf, user_id=user_id, model_name="diary_classifier")
+
+
+def load_art_model(user_id):
+    return _load_pickle(_user_path(user_id, "art_model.pkl"), ArtColorModel,
+                         user_id=user_id, model_name="art_model")
+
+
+def save_art_model(user_id, model):
+    _save_pickle(_user_path(user_id, "art_model.pkl"), model, user_id=user_id, model_name="art_model")
+
+
+GLOBAL_MODEL_USER = "__global__"
+
+
+def _model_state_exists(path, user_id, model_name):
+    if os.path.exists(path):
+        return True
+    supabase = _get_supabase_client()
+    if supabase:
+        try:
+            res = (supabase.table("model_state").select("model_name")
+                   .eq("user_id", user_id).eq("model_name", model_name).limit(1).execute())
+            return bool(res.data)
+        except Exception:
+            return False
+    return False
+
+
+def load_cvae_model(user_id):
+    own_path = _user_path(user_id, "cvae_model.pkl")
+    if _model_state_exists(own_path, user_id, "cvae_model"):
+        return _load_pickle(own_path, CVAEArtModel, epochs=0, user_id=user_id, model_name="cvae_model")
+
+    global_path = _user_path(GLOBAL_MODEL_USER, "cvae_model.pkl")
+    if _model_state_exists(global_path, GLOBAL_MODEL_USER, "cvae_model"):
+        model = _load_pickle(global_path, CVAEArtModel, epochs=0,
+                              user_id=GLOBAL_MODEL_USER, model_name="cvae_model")
+        save_cvae_model(user_id, model)
+        return model
+
+    return _load_pickle(own_path, CVAEArtModel, epochs=5, n_synthetic_samples=64, user_id=user_id, model_name="cvae_model")
+
+
+def save_cvae_model(user_id, model):
+    _save_pickle(_user_path(user_id, "cvae_model.pkl"), model, user_id=user_id, model_name="cvae_model")
+
+
+def load_image_art_model(user_id):
+    return _load_pickle(_user_path(user_id, "image_art_model.pkl"),
+                         GenerativeArtImageModel, n_synthetic_samples=48, epochs=0,
+                         user_id=user_id, model_name="image_art_model")
+
+
+def save_image_art_model(user_id, model):
+    _save_pickle(_user_path(user_id, "image_art_model.pkl"), model, user_id=user_id, model_name="image_art_model")
+
+
+DB_PATH = os.path.join(USER_DIR, "analysis.db")
+
+
+def _get_db():
+    os.makedirs(USER_DIR, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS diary_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            text TEXT NOT NULL,
+            valence REAL, arousal REAL, dominance REAL,
+            clarity REAL, turbulence REAL,
+            top_category TEXT,
+            corrected_category TEXT,
+            reading TEXT, style TEXT,
+            palette TEXT,
+            logged_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
-        img = imgs[0]
-        arr = np.array(img, dtype=np.float32)
-
-        min_val, max_val = arr.min(), arr.max()
-        std_val = arr.std()
-
-        valid = (
-            img.size == (120, 120) and img.mode == "RGB" and min_val < max_val
-        )
-        if not valid:
-            all_styles_valid = False
-
-        print(
-            f"{style:<10} | {str(img.size):<12} | {img.mode:<6} | [{min_val:>3.0f}, {max_val:>3.0f}]          | {std_val:>6.2f}         {'✓' if valid else '✗'}"
-        )
-
-    # --------------------------------------------------------------------------
-    # 4. LATENT SPACE ORBIT ANIMATION GENERATION
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("4. Latent Space Manifold Orbit (`sample_animation`)")
-    print("-" * 85)
-
-    n_frames = 16
-    t0 = time.perf_counter()
-    anim_frames = model.sample_animation(
-        sample_mood, style="aurora", n_frames=n_frames, upscale_to=120
-    )
-    t_anim = (time.perf_counter() - t0) * 1000
-
-    anim_ok = len(anim_frames) == n_frames and anim_frames[0].size == (120, 120)
-    print(f"Generated Frames:       {len(anim_frames)}/{n_frames}")
-    print(f"Generation Latency:     {t_anim:.2f} ms ({t_anim / n_frames:.2f} ms/frame)")
-    print(f"Smooth Orbit Status:    {'✓ Passed' if anim_ok else '✗ Failed'}")
-
-    # --------------------------------------------------------------------------
-    # 5. FINE-TUNING & PERSISTENCE STATE ROUND-TRIP
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("5. Online Image Adaptation (`fine_tune`) & State Persistence")
-    print("-" * 85)
-
-    initial_size = model._X.shape[0]
-    target_img = Image.new("RGB", (120, 120), color=(180, 50, 90))
-
-    # User fine-tune call
-    model.fine_tune(sample_mood, target_img, style="prism", steps=10)
-    tuned_size = model._X.shape[0]
-    fine_tune_ok = (tuned_size == initial_size + 1) and (
-        model.n_real_examples == 1
-    )
-
-    print(
-        f"Fine-Tuning Example Append: {initial_size} -> {tuned_size} {'✓' if fine_tune_ok else '✗'}"
-    )
-
-    # State serialization check
-    state = model.get_state()
-    restored_model = GenerativeArtImageModel(n_synthetic_samples=10, epochs=0)
-    restored_model.load_state(state)
-    restored_size = restored_model._X.shape[0]
-
-    state_ok = restored_size == tuned_size and hasattr(
-        restored_model.net, "decoder"
-    )
-    print(
-        f"Model State Serialization:  {'✓ Restored Successfully' if state_ok else '✗ Deserialization Error'}"
-    )
-
-    # --------------------------------------------------------------------------
-    # SUMMARY DIAGNOSTIC
-    # --------------------------------------------------------------------------
-    print("\n" + "=" * 85)
-    print("IMAGE CVAE SYSTEM SUMMARY")
-    print("=" * 85)
-    all_passed = (
-        enc_shape_ok
-        and dec_shape_ok
-        and loss_valid
-        and all_styles_valid
-        and anim_ok
-        and fine_tune_ok
-        and state_ok
-    )
-
-    print(
-        f"Forward/Backward Pipeline:   {'✓ Passed' if (enc_shape_ok and dec_shape_ok and loss_valid) else '✗ Failed'}"
-    )
-    print(
-        f"Multi-Style Rendering:       {'✓ Passed (6/6 styles)' if all_styles_valid else '✗ Failed'}"
-    )
-    print(f"Manifold Animation:          {'✓ Passed' if anim_ok else '✗ Failed'}")
-    print(
-        f"Online Learning & Saving:    {'✓ Passed' if (fine_tune_ok and state_ok) else '✗ Failed'}"
-    )
-
-    if all_passed:
-        print(
-            "✓ SUCCESS: GenerativeArtImageModel executes tensor ops, multi-style generation, and persistence without errors."
-        )
-    else:
-        print("⚠ NOTE: Review tensor dimensions or deconvolution channel sizes.")
-    print("=" * 85)
+    """)
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(diary_entries)")}
+    if "corrected_category" not in existing_cols:
+        conn.execute("ALTER TABLE diary_entries ADD COLUMN corrected_category TEXT")
+    return conn
 
 
-# Run evaluation
-evaluate_generative_art_image_model()
+try:
+    from supabase import create_client
+except ImportError:
+    create_client = None
 
 
-def evaluate_image_model_style_diversity(
-    img_model=None, sample_mood=None, random_state=42
-):
-    # 1. Load or instantiate model
-    if img_model is None:
-        img_model = GenerativeArtImageModel(
-            n_synthetic_samples=480, epochs=70, lr=1e-3, random_state=42
-        )
-
-    # 2. Print Data Summary
-    summary = img_model.data_summary()
-    if "styles_trained_on" not in summary:
-        summary["styles_trained_on"] = list(STYLE_NAMES)
-    print(f"Data: {summary}")
-
-    # 3. Fixed test condition (e.g. grounded serene state)
-    if sample_mood is None:
-        sample_mood = {
-            "valence": 0.65,
-            "arousal": -0.40,
-            "dominance": 0.40,
-            "clarity": 0.80,
-            "turbulence": 0.10,
-        }
-
-    # Use a fixed latent z vector across all styles to isolate condition-driven structural changes
-    torch.manual_seed(random_state)
-    z_fixed = torch.randn(1, IMG_LATENT_DIM)
-
-    style_images = {}
-    style_arrays = {}
-
-    img_model.net.eval()
-    with torch.no_grad():
-        for style in STYLE_NAMES:
-            cond_row = _mood_vad_to_list(sample_mood) + _style_onehot(style)
-            cond_tensor = torch.tensor([cond_row], dtype=torch.float32)
-            out_tensor = img_model.net.decoder(z_fixed, cond_tensor)
-            img = img_model._tensor_to_image(out_tensor[0], upscale_to=240)
-
-            style_images[style] = img
-            style_arrays[style] = np.array(img, dtype=np.float32)
-
-    # 4. Plot Visual Comparison Subplots
-    fig, axes = plt.subplots(1, len(STYLE_NAMES), figsize=(14, 2.8))
-    fig.suptitle(
-        "Same mood, all 6 AI-generated styles — genuinely different, not just recoloured",
-        fontsize=10,
-        y=1.02,
-    )
-
-    for ax, style in zip(axes, STYLE_NAMES):
-        ax.imshow(style_images[style])
-        ax.set_title(style, fontsize=9, pad=5)
-        ax.axis("off")
-
-    plt.tight_layout()
-    plt.show()
-
-    # 5. Pairwise Mean Absolute Pixel Difference (L1 in [0, 255] RGB space)
-    print("Pairwise mean pixel difference across styles (0 = identical):")
-    base_style = "cloud"
-    base_arr = style_arrays[base_style]
-
-    for style in STYLE_NAMES:
-        if style == base_style:
-            continue
-        diff = np.mean(np.abs(base_arr - style_arrays[style]))
-        print(f"  {base_style:<6} vs {style:<7} : {diff:.1f}")
+def _get_supabase_client():
+    if create_client is None:
+        return None
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if url and key:
+        return create_client(url, key)
+    return None
 
 
-# Run evaluation
-evaluate_image_model_style_diversity()
+def load_entry_history(user_id):
+    supabase = _get_supabase_client()
+    if supabase:
+        try:
+            res = (supabase.table("diary_entries").select("*").eq("user_id", user_id)
+                   .order("logged_at").execute())
+            data = res.data or []
+            for row in data:
+                if isinstance(row.get("palette"), str):
+                    row["palette"] = json.loads(row["palette"])
+            return data
+        except Exception as e:
+            print(f"Error fetching from cloud DB: {e}")
+
+    path = _user_path(user_id, "entries.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return []
 
 
+def append_entry(user_id, entry):
+    if "entry_id" not in entry:
+        entry["entry_id"] = str(uuid.uuid4())
+
+    history = load_entry_history(user_id)
+    history.append(entry)
+
+    supabase = _get_supabase_client()
+    cloud_status = "local_only"
+    if supabase:
+        try:
+            db_row = {
+                "user_id": user_id,
+                "entry_id": entry.get("entry_id"),
+                "date": entry.get("date"),
+                "text": entry.get("text"),
+                "valence": entry.get("valence"),
+                "arousal": entry.get("arousal"),
+                "dominance": entry.get("dominance"),
+                "clarity": entry.get("clarity"),
+                "turbulence": entry.get("turbulence"),
+                "top_category": entry.get("top_category"),
+                "corrected_category": entry.get("corrected_category"),
+                "reading": entry.get("reading"),
+                "style": entry.get("style"),
+                "palette": entry.get("palette")
+            }
+            supabase.table("diary_entries").insert(db_row).execute()
+            cloud_status = "saved"
+        except Exception as e:
+            print(f"WARNING: Supabase write failed: {e}")
+            cloud_status = str(e)
+
+    with open(_user_path(user_id, "entries.json"), "w") as f:
+        json.dump(history, f, indent=2)
+
+    return history, cloud_status
+
+
+def update_entry(user_id, entry, updates):
+    entry_id = entry.get("entry_id")
+    supabase = _get_supabase_client()
+    cloud_status = "local_only"
+
+    if supabase:
+        try:
+            q = supabase.table("diary_entries").update(updates).eq("user_id", user_id)
+            if entry_id:
+                q = q.eq("entry_id", entry_id)
+            else:
+                q = q.eq("date", entry.get("date")).eq("text", entry.get("text"))
+            q.execute()
+            cloud_status = "saved"
+        except Exception as e:
+            print(f"WARNING: Supabase update failed: {e}")
+            cloud_status = str(e)
+
+    path = _user_path(user_id, "entries.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            local_history = json.load(f)
+        for row in local_history:
+            matches = (row.get("entry_id") == entry_id if entry_id
+                       else row.get("date") == entry.get("date") and row.get("text") == entry.get("text"))
+            if matches:
+                row.update(updates)
+        with open(path, "w") as f:
+            json.dump(local_history, f, indent=2)
+    return cloud_status
+
+
+# ==============================================================================
+# 8. UNIFIED PIPELINE & ABLATION STUDY
+# ==============================================================================
 _CVAE_SINGLETON = None
 _FORECASTER_SINGLETON = None
 
@@ -3145,44 +1693,26 @@ _FORECASTER_SINGLETON = None
 def _get_cvae_model():
     global _CVAE_SINGLETON
     if _CVAE_SINGLETON is None:
-        _CVAE_SINGLETON = CVAEArtModel(epochs=40)
+        _CVAE_SINGLETON = CVAEArtModel(epochs=0)
     return _CVAE_SINGLETON
 
 
 def _get_forecaster():
     global _FORECASTER_SINGLETON
     if _FORECASTER_SINGLETON is None:
-        _FORECASTER_SINGLETON = MoodTemporalForecaster(epochs=150)
+        _FORECASTER_SINGLETON = MoodTemporalForecaster(epochs=0)
     return _FORECASTER_SINGLETON
 
 
 def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablations=None,
                           clf=None, cvae_model=None):
-    """
-    Executes end-to-end dependency chain:
-    Text -> Classifier (Topic) -> Mapper (VAD) -> Forecaster (History) -> CVAE (Visual)
-
-    Forecaster: MoodLSTM trained on synthetic mood-inertia trajectories
-    (see MoodTemporalForecaster), not on real user history — history is
-    used only at inference time as the input sequence.
-
-    CVAE: a stochastic, VAD-conditioned wrapper around the rule-based
-    deterministic_palette() function, optionally personalized via a
-    lightweight fine_tune() on one user-chosen preset. It is not learning
-    palette structure from real user preference data at scale.
-    """
     ablations = ablations or []
-
-    # Step 1: Classification & Topic Extraction
     if clf is None:
         clf = DiaryMoodClassifier()
     res = clf.analyze(text)
     topic = res["top_category"]
-
-    # Step 2: VAD Mapping
     current_vad = [res["valence"], res["arousal"], res["dominance"]]
 
-    # Step 3: Trained Forecaster History Integration
     if "no_lstm" not in ablations and len(history_vad) >= 3:
         full_seq = history_vad + [current_vad]
         forecaster = _get_forecaster()
@@ -3198,7 +1728,6 @@ def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablatio
         "turbulence": res["turbulence"]
     }
 
-    # Step 4: Palette Optimization & CVAE Generation
     if "no_cvae" in ablations:
         final_palette = deterministic_palette_hex(
             target_vad["valence"], (target_vad["arousal"] + 1) / 2,
@@ -3207,7 +1736,7 @@ def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablatio
         render_engine = "Rule-based Fallback (No CVAE)"
     else:
         if cvae_model is None:
-            cvae_model = _get_cvae_model()   # cached, not retrained per call -- fallback only
+            cvae_model = _get_cvae_model()
         if "no_optimiser" not in ablations and user_preference_preset:
             pref_hex = preset_palette(user_preference_preset)
             cvae_model.fine_tune(target_vad, pref_hex, steps=15)
@@ -3225,169 +1754,385 @@ def run_unified_pipeline(text, history_vad, user_preference_preset=None, ablatio
         "engine": render_engine
     }
 
-def run_ablation_study(sample_text, mock_history):
-    """Evaluates output variance across 4 ablation states."""
-    print("\n" + "=" * 60)
-    print("PIPELINE ABLATION TESTING")
-    print("=" * 60)
 
-    configs = {
-        "1. Full Pipeline": [],
-        "2. W/o CVAE (Static Rules)": ["no_cvae"],
-        "3. W/o Palette Optimiser": ["no_optimiser"],
-        "4. W/o LSTM Sequence": ["no_lstm"]
-    }
-
-    fig, axes = plt.subplots(1, 4, figsize=(14, 2.2))
-
-    for ax, (name, flags) in zip(axes, configs.items()):
-        out = run_unified_pipeline(sample_text, mock_history, user_preference_preset="warmth", ablations=flags)
-        palette = out["palette"]
-
-        for idx, hex_color in enumerate(palette):
-            ax.add_patch(plt.Rectangle((idx, 0), 1, 1, color=hex_color))
-        ax.set_xlim(0, 4); ax.set_ylim(0, 1); ax.set_xticks([]); ax.set_yticks([])
-        ax.set_title(f"{name}\n({out['engine']})", fontsize=7)
-
-    plt.suptitle("Ablation Comparison — Output Visual Palette Variations", fontsize=10)
-    plt.tight_layout()
-    plt.show()
+# ==============================================================================
+# 9. STREAMLIT APP IMPLEMENTATION
+# ==============================================================================
+if st is not None:
+    @st.cache_resource(show_spinner="Loading models into memory...")
+    def get_cached_models(user_id):
+        clf = load_diary_classifier(user_id)
+        cvae = load_cvae_model(user_id)
+        forecaster = _get_forecaster()
+        img_model = load_image_art_model(user_id)
+        return clf, cvae, forecaster, img_model
 
 
-def evaluate_unified_pipeline():
-    print("=" * 85)
-    print(f"{'UNIFIED GENERATIVE PIPELINE & ABLATION STUDY BENCHMARK':^85}")
-    print("=" * 85)
+def _inject_theme_css():
+    if st is not None:
+        st.markdown("""
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,400;1,500&family=Hanken+Grotesk:wght@300;400;500;600&display=swap');
+        :root {
+            --accent: #d9b673; --accent-glow: rgba(217, 182, 115, 0.25);
+            --ink: #f2ede4; --ink-soft: #b8b0a4; --bg-deep: #0a0a0f; --bg-card: #14131a;
+            --bg-card-border: rgba(217, 182, 115, 0.15);
+            --serif: 'Cormorant Garamond', Georgia, serif;
+            --sans: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+        }
+        .stApp { background: radial-gradient(120% 100% at 20% 0%, #1a1420 0%, var(--bg-deep) 65%); color: var(--ink); font-family: var(--sans); }
+        section[data-testid="stSidebar"] { background: var(--bg-card) !important; border-right: 1px solid var(--bg-card-border) !important; }
+        h1, h2, h3 { font-family: var(--serif) !important; color: var(--ink) !important; }
+        .mood-kicker { font-family: var(--sans); text-transform: uppercase; letter-spacing: 0.18em; font-size: 0.72rem; color: var(--accent); margin-bottom: 6px; }
+        .mood-reading { font-family: var(--serif); font-size: 1.35rem; font-style: italic; color: var(--ink); line-height: 1.4; margin: 10px 0; }
+        .stTextArea textarea { background: rgba(20, 19, 26, 0.8) !important; color: var(--ink) !important; border: 1px solid var(--bg-card-border) !important; border-radius: 8px !important; font-family: var(--serif) !important; font-size: 1.15rem !important; }
+        .stButton > button { font-family: var(--sans); border-radius: 999px !important; border: 1px solid rgba(217,182,115,0.4) !important; background: transparent !important; color: var(--ink) !important; }
+        .stButton > button[kind="primary"] { background: var(--accent) !important; color: #100e0a !important; border: none !important; font-weight: 600; }
+        div[data-testid="stMetricValue"] { font-family: var(--serif) !important; color: var(--accent) !important; }
+        </style>
+        """, unsafe_allow_html=True)
 
-    def print_swatch(hex_list, label=""):
-        blocks = []
-        for h in hex_list:
-            clean_h = h.lstrip("#")
-            r, g, b = (int(clean_h[i:i + 2], 16) for i in (0, 2, 4))
-            blocks.append(f"\033[48;2;{r};{g};{b}m    \033[0m")
-        print(f"{label:<32} {' '.join(blocks)}  [{' '.join(hex_list)}]")
 
-    sample_entry_text = "Work was intense and fast-paced today, but I managed to stay completely organized and grounded."
-    mock_vad_history = [
-        [0.20, -0.10, 0.30],
-        [0.35,  0.05, 0.40],
-        [0.45,  0.20, 0.45],
-        [0.55,  0.30, 0.50]
-    ]
+def _meditation_rings_html(reading_text=""):
+    return f"""
+    <style>
+    @keyframes moodBreathe {{
+        0%   {{ transform: scale(0.65); opacity: 0.35; border-color: rgba(217,182,115,0.3); }}
+        40%  {{ transform: scale(1.05); opacity: 0.95; border-color: rgba(217,182,115,0.85); box-shadow: 0 0 30px rgba(217,182,115,0.35); }}
+        60%  {{ transform: scale(1.05); opacity: 0.95; border-color: rgba(217,182,115,0.85); box-shadow: 0 0 30px rgba(217,182,115,0.35); }}
+        100% {{ transform: scale(0.65); opacity: 0.35; border-color: rgba(217,182,115,0.3); }}
+    }}
+    .med-container {{ display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 0; background: rgba(20, 19, 26, 0.4); border-radius: 16px; border: 1px solid rgba(217,182,115,0.12); margin-top: 15px; }}
+    .med-ring-outer {{ position: relative; width: 180px; height: 180px; border-radius: 50%; border: 1.5px solid rgba(217,182,115,0.6); animation: moodBreathe 11s ease-in-out infinite; }}
+    .med-ring-inner {{ position: absolute; top: 18px; left: 18px; width: 140px; height: 140px; border-radius: 50%; border: 1px dashed rgba(217,182,115,0.4); animation: moodBreathe 11s ease-in-out infinite 0.35s; }}
+    .med-caption {{ margin-top: 26px; font-family: 'Cormorant Garamond', Georgia, serif; font-style: italic; font-size: 1.25rem; color: #f2ede4; text-align: center; }}
+    </style>
+    <div class="med-container">
+        <div class="med-ring-outer"><div class="med-ring-inner"></div></div>
+        <div class="med-caption">"{reading_text}"</div>
+    </div>
+    """
 
-    # --------------------------------------------------------------------------
-    # 1. FULL PIPELINE EXECUTION & STAGE METRICS
-    # --------------------------------------------------------------------------
-    print("\n1. End-to-End Pipeline Forward Pass (Text -> VAD -> LSTM -> CVAE)")
-    print("-" * 85)
 
-    t0 = time.perf_counter()
-    res = run_unified_pipeline(
-        sample_entry_text,
-        mock_vad_history,
-        user_preference_preset="warmth"
+def _evolution_timeline_svg(history, width=780, height=280):
+    if len(history) < 2:
+        return None
+    pad_x, pad_y = 60, 40
+    n = len(history)
+    plot_w = width - pad_x * 2
+    plot_h = height - pad_y * 2
+    mid_y = pad_y + plot_h / 2
+
+    def catmull_rom(points):
+        if len(points) < 2:
+            return ""
+        d = f"M {points[0][0]:.1f} {points[0][1]:.1f}"
+        for i in range(len(points) - 1):
+            p0 = points[i - 1] if i - 1 >= 0 else points[i]
+            p1, p2 = points[i], points[i + 1]
+            p3 = points[i + 2] if i + 2 < len(points) else p2
+            c1x, c1y = p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6
+            c2x, c2y = p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6
+            d += f" C {c1x:.1f} {c1y:.1f}, {c2x:.1f} {c2y:.1f}, {p2[0]:.1f} {p2[1]:.1f}"
+        return d
+
+    pts = []
+    for i, e in enumerate(history):
+        x = pad_x + (i / (n - 1)) * plot_w
+        v = float(np.clip(e.get("valence", 0.0), -1.0, 1.0))
+        y = mid_y - v * (plot_h * 0.42)
+        pts.append((x, y))
+
+    path = catmull_rom(pts)
+    stops = "".join(
+        f'<stop offset="{i/(n-1) if n>1 else 0:.2f}" stop-color="{e.get("palette", ["#d9b673"]*4)[2]}"/>'
+        for i, e in enumerate(history)
     )
-    t_pipeline = (time.perf_counter() - t0) * 1000
+    dots = "".join(f'<circle cx="{p[0]:.1f}" cy="{p[1]:.1f}" r="4.5" fill="#d9b673" stroke="#0a0a0f" stroke-width="1.5"/>' for p in pts)
 
-    print(f"Input Diary Text:       \"{sample_entry_text}\"")
-    print(f"Extracted Topic/Mood:   [{res['topic'].upper()}]")
-    print(f"Assigned Visual Style:  <{res['analysis']['style'].upper()}>")
-    print(f"Target VAD Coordinates: V: {res['target_vad']['valence']:+.2f} | A: {res['target_vad']['arousal']:+.2f} | D: {res['target_vad']['dominance']:+.2f}")
-    print(f"Target Clarity / Turb:  Clarity: {res['target_vad']['clarity']:.2f} | Turbulence: {res['target_vad']['turbulence']:.2f}")
-    print(f"Pipeline Engine Used:   {res['engine']}")
-    print(f"Total Execution Time:   {t_pipeline:.2f} ms")
-    print_swatch(res["palette"], label="Generated Aesthetic Palette:")
+    return f"""
+    <svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;background:rgba(20,19,26,0.5);border-radius:12px;border:1px solid rgba(217,182,115,0.15);padding:10px 0;">
+        <defs>
+            <linearGradient id="ribbonGrad" x1="0" y1="0" x2="1" y2="0">{stops}</linearGradient>
+            <filter id="ribbonGlow" x="-20%" y="-40%" width="140%" height="180%">
+                <feGaussianBlur stdDeviation="6" result="blur"/>
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+        </defs>
+        <line x1="{pad_x}" y1="{mid_y:.1f}" x2="{width - pad_x}" y2="{mid_y:.1f}" stroke="rgba(217,182,115,0.12)" stroke-dasharray="4 4" stroke-width="1"/>
+        <path d="{path}" fill="none" stroke="url(#ribbonGrad)" stroke-width="7" opacity="0.4" filter="url(#ribbonGlow)"/>
+        <path d="{path}" fill="none" stroke="url(#ribbonGrad)" stroke-width="2.5"/>
+        {dots}
+    </svg>
+    """
 
-    # --------------------------------------------------------------------------
-    # 2. COMPREHENSIVE ABLATION STUDY EVALUATION
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("2. Ablation Analysis: Component Variance & Engine Fallbacks")
-    print("-" * 85)
 
-    ablation_modes = {
-        "1. Full Pipeline (CVAE + LSTM + Opt)": [],
-        "2. W/o CVAE (Static Rules Fallback)":  ["no_cvae"],
-        "3. W/o Palette Optimiser":              ["no_optimiser"],
-        "4. W/o LSTM Temporal Forecaster":       ["no_lstm"]
-    }
+def run_streamlit_app():
+    if st is None:
+        return
 
-    ablation_palettes = {}
-    for name, flags in ablation_modes.items():
-        out = run_unified_pipeline(
-            sample_entry_text,
-            mock_vad_history,
-            user_preference_preset="warmth",
-            ablations=flags
+    st.set_page_config(page_title="Mood Evolution", page_icon="◐", layout="centered")
+    _inject_theme_css()
+
+    st.sidebar.markdown('<div class="mood-kicker">Account Sandbox</div>', unsafe_allow_html=True)
+    st.sidebar.markdown("### Profile Control")
+    user_id = st.sidebar.text_input("User ID", value=st.session_state.get("user_id", "me"))
+    st.session_state["user_id"] = user_id
+
+    if st.sidebar.button("Reset User Sandbox"):
+        user_dir_path = user_dir(user_id)
+        if os.path.exists(user_dir_path):
+            shutil.rmtree(user_dir_path)
+        st.sidebar.success("Local state cleared. Reload page.")
+
+    clf, cvae_model, forecaster, image_art_model = get_cached_models(user_id)
+
+    tab_today, tab_archive, tab_evolution = st.tabs(["Today", "Archive", "Evolution"])
+
+    with tab_today:
+        st.markdown('<div class="mood-kicker">Reflection Entry</div>', unsafe_allow_html=True)
+        st.markdown(f"## {dt.date.today().strftime('%B %-d, %Y')}")
+        if "draft_text" not in st.session_state:
+            st.session_state.draft_text = ""
+
+        text = st.text_area(
+            "How are you, today?",
+            value=st.session_state.draft_text,
+            height=130,
+            placeholder="Describe your inner thoughts, subtle feelings, or events...",
+            label_visibility="collapsed",
         )
-        ablation_palettes[name] = out["palette"]
-        print(f"{name}")
-        print(f"  • Engine: {out['engine']}")
-        print_swatch(out["palette"], label="  • Palette:")
+        st.session_state.draft_text = text
+        word_count = len(text.split())
 
-    # Compare differences between variations
-    unique_palettes = set(tuple(p) for p in ablation_palettes.values())
-    ablation_distinct = len(unique_palettes) > 1
+        col_reflect, col_regen = st.columns([1, 1])
+        reflect_clicked = col_reflect.button("Reflect", disabled=word_count < 3, type="primary", use_container_width=True)
+        regenerate_clicked = col_regen.button("Sample Again", disabled="last_result" not in st.session_state, use_container_width=True)
 
-    # --------------------------------------------------------------------------
-    # 3. SINGLETON & STATE PASSING VERIFICATION
-    # --------------------------------------------------------------------------
-    print("\n" + "-" * 85)
-    print("3. Model Singleton Caching & Custom Instance Injection")
-    print("-" * 85)
+        if reflect_clicked:
+            history = load_entry_history(user_id)
+            history_vads = [[e["valence"], e["arousal"], e["dominance"]] for e in history if "valence" in e]
+            pipe_res = run_unified_pipeline(text, history_vads, clf=clf, cvae_model=cvae_model)
+            result = pipe_res["analysis"]
 
-    # Check that calling without models uses singletons
-    cvae_inst1 = _get_cvae_model()
-    cvae_inst2 = _get_cvae_model()
-    is_singleton_cvae = cvae_inst1 is cvae_inst2
+            tokens = re.findall(r"[a-zA-Z']+", text.lower())
+            words = [{"w": w, "score": clf.word_score(w)} for w in tokens]
+            words = [w for w in words if abs(w["score"]) > 0.03]
+            seen, deduped = set(), []
+            for w in words:
+                if w["w"] not in seen:
+                    seen.add(w["w"])
+                    deduped.append(w)
 
-    lstm_inst1 = _get_forecaster()
-    lstm_inst2 = _get_forecaster()
-    is_singleton_lstm = lstm_inst1 is lstm_inst2
+            st.session_state.last_result = {
+                "text": text,
+                "analysis": result,
+                "target_vad": pipe_res["target_vad"],
+                "cvae_palette": pipe_res["palette"],
+                "engine": pipe_res["engine"],
+                "words": deduped[:6],
+                "art_seed": text,
+            }
 
-    print(f"CVAE Model Singleton Cached:     {'✓ Passed' if is_singleton_cvae else '✗ Failed'}")
-    print(f"Forecaster Singleton Cached:     {'✓ Passed' if is_singleton_lstm else '✗ Failed'}")
+        if regenerate_clicked and "last_result" in st.session_state:
+            r = st.session_state.last_result
+            r["cvae_palette"] = cvae_model.sample(r["target_vad"], n_samples=1)[0]
+            r["art_seed"] = None
 
-    # --------------------------------------------------------------------------
-    # 4. ABLATION PLOT VISUALIZATION
-    # --------------------------------------------------------------------------
-    try:
-        run_ablation_study(sample_entry_text, mock_vad_history)
-        plot_status = "✓ Rendered"
-    except Exception as e:
-        plot_status = f"✗ Plot Error: {e}"
+        if "last_result" in st.session_state:
+            r = st.session_state.last_result
+            result = r["analysis"]
 
-    # --------------------------------------------------------------------------
-    # DIAGNOSTIC SUMMARY
-    # --------------------------------------------------------------------------
-    print("\n" + "=" * 85)
-    print("UNIFIED PIPELINE DIAGNOSTIC SUMMARY")
-    print("=" * 85)
-    print(f"Component Chaining:         ✓ Text -> Classifier -> VAD -> Forecaster -> CVAE")
-    print(f"Ablation Divergence:        {'✓ Distinct modes operational' if ablation_distinct else '✗ Identical outputs'}")
-    print(f"Model Memory Management:    {'✓ Lazy singletons active' if (is_singleton_cvae and is_singleton_lstm) else '✗ Redundant initializations'}")
-    print(f"Matplotlib Visualization:   {plot_status}")
+            st.markdown(f'<div class="mood-reading">"{result["reading"]}"</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<span style="color:var(--accent);text-transform:uppercase;font-size:0.78rem;letter-spacing:0.14em;">Top Tone: <strong>{result["top_category"]}</strong></span> '
+                f'<span style="color:var(--ink-faint);margin:0 8px;">|</span> <span style="color:var(--ink-soft);font-size:0.78rem;">{r["engine"]}</span>',
+                unsafe_allow_html=True,
+            )
 
-    if ablation_distinct and is_singleton_cvae and is_singleton_lstm:
-        print("✓ SUCCESS: Unified pipeline executes smoothly with verified component decoupling.")
-    else:
-        print("⚠ NOTE: Review ablation flags or singleton state handling.")
-    print("=" * 85)
+            override_choice = st.selectbox(
+                "Palette Selection",
+                ["Auto (detected)"] + [CATEGORY_CORRECTION_DEFS[c]["label"] for c in CATEGORIES] + ["Custom color"],
+                key="palette_choice",
+                label_visibility="collapsed",
+            )
+
+            active_palette = r["cvae_palette"]
+            override_for_training = None
+
+            if override_choice != "Auto (detected)":
+                if override_choice == "Custom color":
+                    c_col1, c_col2, c_col3, c_col4 = st.columns(4)
+                    c0 = c_col1.color_picker("Base", "#0b0f0f")
+                    c1 = c_col2.color_picker("Mid", "#492133")
+                    c2 = c_col3.color_picker("Accent", "#b45977")
+                    c3 = c_col4.color_picker("Highlight", "#d2c1c1")
+                    active_palette = [c0, c1, c2, c3]
+                    override_for_training = ("custom", active_palette)
+                else:
+                    category = [c for c in CATEGORIES if CATEGORY_CORRECTION_DEFS[c]["label"] == override_choice][0]
+                    active_palette = category_correction_palette(category)
+                    override_for_training = ("preset", category)
+
+            swatch_cols = st.columns(4)
+            for i, hexcolor in enumerate(active_palette):
+                swatch_cols[i].markdown(
+                    f'<div style="background:{hexcolor};height:32px;border-radius:6px;border:1px solid rgba(255,255,255,0.08);box-shadow:0 2px 8px rgba(0,0,0,0.3);"></div>',
+                    unsafe_allow_html=True,
+                )
+
+            art_mode = st.radio(
+                "Art Engine",
+                ["Procedural Geometry (fast, stable)", "Generative Canvas (Image CVAE)"],
+                horizontal=True,
+            )
+            style_choice = st.selectbox("Aesthetic Style", STYLE_NAMES, index=0)
+
+            if art_mode.startswith("Generative Canvas"):
+                with st.spinner("Generating latent space artwork..."):
+                    art = image_art_model.sample(r["target_vad"], style=style_choice, n_samples=1)[0]
+            else:
+                art = render_abstract_art(active_palette, seed=r["art_seed"] or f"{text}-{id(r)}", style=style_choice)
+
+            meditate_on = st.toggle("🧘 Meditate — Slow breathing motion")
+            if meditate_on:
+                with st.spinner("Rendering meditation animation..."):
+                    if art_mode.startswith("Generative Canvas"):
+                        frames = image_art_model.sample_animation(r["target_vad"], style=style_choice, n_frames=24, upscale_to=360)
+                    else:
+                        frames = render_meditation_gif(active_palette, seed=r["art_seed"] or text, style=style_choice, n_frames=24, size=(640, 400))
+                    gif_bytes = frames_to_gif_bytes(frames, duration_ms=90)
+                st.image(gif_bytes, use_container_width=True)
+                st.markdown(_meditation_rings_html(result["reading"]), unsafe_allow_html=True)
+            else:
+                st.image(art, use_container_width=True)
+
+            m_col1, m_col2, m_col3 = st.columns(3)
+            m_col1.metric("Valence", f"{r['target_vad']['valence']:+.2f}")
+            m_col2.metric("Arousal", f"{r['target_vad']['arousal']:+.2f}")
+            m_col3.metric("Clarity", f"{r['target_vad']['clarity']:.2f}")
+
+            if st.button("Seal This Day", type="primary", use_container_width=True):
+                corrected_category = None
+                if override_for_training and override_for_training[0] == "preset":
+                    corrected_category = override_for_training[1]
+
+                entry = {
+                    "date": dt.date.today().isoformat(),
+                    "text": text,
+                    "valence": r["target_vad"]["valence"],
+                    "arousal": r["target_vad"]["arousal"],
+                    "dominance": r["target_vad"]["dominance"],
+                    "clarity": r["target_vad"]["clarity"],
+                    "turbulence": r["target_vad"]["turbulence"],
+                    "top_category": result["top_category"],
+                    "reading": result["reading"],
+                    "palette": active_palette,
+                    "style": style_choice,
+                    "corrected_category": corrected_category,
+                }
+                append_entry(user_id, entry)
+
+                if override_for_training:
+                    kind, val = override_for_training
+                    if kind == "preset":
+                        clf.learn(text, val)
+                        save_diary_classifier(user_id, clf)
+                    cvae_model.fine_tune(r["target_vad"], active_palette, steps=30)
+                    save_cvae_model(user_id, cvae_model)
+
+                st.session_state.draft_text = ""
+                del st.session_state["last_result"]
+                st.success("Day sealed and preserved.")
+                st.rerun()
+
+    with tab_archive:
+        history = load_entry_history(user_id)
+        if not history:
+            st.info("No journal entries sealed yet.")
+        else:
+            cluster_labels = None
+            if len(history) >= 3:
+                archive_model = ArchiveClustering(n_clusters=min(3, len(history)))
+                assignments = archive_model.fit(history)
+                cluster_labels = [archive_model.cluster_labels[a] for a in assignments]
+
+            for i, entry in enumerate(reversed(history)):
+                idx = len(history) - 1 - i
+                thumb = render_thumbnail(entry["palette"], seed=entry["text"], style=entry.get("style", "cloud"))
+                cols = st.columns([1, 3])
+                cols[0].image(thumb, use_container_width=True)
+                with cols[1]:
+                    cluster_str = f" · <em>cluster: {cluster_labels[idx]}</em>" if cluster_labels else ""
+                    st.markdown(
+                        f'<div class="mood-kicker">{entry["date"]}{cluster_str}</div>'
+                        f'<div style="font-family:var(--serif);font-size:1.15rem;color:var(--ink);">{entry["reading"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(f'"{entry["text"][:160]}{"..." if len(entry["text"]) > 160 else ""}"')
+                    with st.expander("Calibrate or Correct"):
+                        correction_choice = st.selectbox(
+                            "Corrected Tone",
+                            ["No change"] + [CATEGORY_CORRECTION_DEFS[c]["label"] for c in CATEGORIES],
+                            key=f"archive_correction_{idx}",
+                            label_visibility="collapsed",
+                        )
+                        if st.button("Apply Correction", key=f"archive_apply_{idx}"):
+                            if correction_choice != "No change":
+                                category = [c for c in CATEGORIES if CATEGORY_CORRECTION_DEFS[c]["label"] == correction_choice][0]
+                                correction_hex = category_correction_palette(category)
+                                entry_vad = {
+                                    "valence": entry["valence"],
+                                    "arousal": entry["arousal"],
+                                    "dominance": entry["dominance"],
+                                    "clarity": entry["clarity"],
+                                    "turbulence": entry["turbulence"]
+                                }
+                                clf.learn(entry["text"], category)
+                                save_diary_classifier(user_id, clf)
+                                cvae_model.fine_tune(entry_vad, correction_hex, steps=30)
+                                save_cvae_model(user_id, cvae_model)
+                                update_entry(user_id, entry, {"corrected_category": category, "palette": correction_hex})
+                                st.success("Entry and model weights updated.")
+                                st.rerun()
+                st.markdown("<hr style='margin:16px 0;'>", unsafe_allow_html=True)
+
+    with tab_evolution:
+        history = load_entry_history(user_id)
+        if len(history) < 2:
+            st.info("Log at least 2 entries to activate evolution ribbons and temporal forecasts.")
+        else:
+            st.markdown('<div class="mood-kicker">Emotional Trajectory</div>', unsafe_allow_html=True)
+            st.markdown("### How your inner weather has evolved")
+            svg = _evolution_timeline_svg(history)
+            if svg:
+                st.markdown(svg, unsafe_allow_html=True)
+
+            days = list(range(len(history)))
+            valences = [e["valence"] for e in history if "valence" in e]
+            history_vads = [[e["valence"], e["arousal"], e["dominance"]] for e in history if "valence" in e]
+            forecaster = _get_forecaster()
+            next_vad = evaluate_forecaster_vs_baseline(forecaster, history_vads, verbose=False)
+
+            fig, ax = plt.subplots(figsize=(8, 3.2), facecolor="#14131a")
+            ax.set_facecolor("#14131a")
+            ax.plot(days, valences, "o-", label="Logged Valence", color="#d9b673", linewidth=2)
+            ax.plot([len(days)], [next_vad[0]], "o--", label="Forecasted Next Day", color="#b9a3e0", linewidth=2)
+            ax.axhline(0, color="rgba(217,182,115,0.2)", linestyle="--", linewidth=1)
+            ax.tick_params(colors="#b8b0a4", labelsize=8)
+            for spine in ax.spines.values():
+                spine.set_color("rgba(217,182,115,0.15)")
+            ax.legend(facecolor="#14131a", edgecolor="rgba(217,182,115,0.2)", labelcolor="#f2ede4", fontsize=8)
+            ax.set_title("VAD Sequence Momentum & LSTM Forecast", color="#f2ede4", fontsize=10, fontfamily="serif")
+            st.pyplot(fig)
 
 
-# Run evaluation
-evaluate_unified_pipeline()
-
-# In Mood_Evolution.py on GitHub:
-
-@st.cache_resource(show_spinner="Loading models...")
-def get_cached_models(user_id):
-    clf = load_diary_classifier(user_id)
-    cvae = load_cvae_model(user_id)
-    forecaster = _get_forecaster()
-    img_model = load_image_art_model(user_id)
-    return clf, cvae, forecaster, img_model
-
-# Only run the app when launched
+# ==============================================================================
+# 10. ENTRYPOINT / EXECUTION ROUTER
+# ==============================================================================
 if __name__ == "__main__":
-    run_streamlit_app()
+    if "STREAMLIT_SERVER_PORT" in os.environ or (st is not None and getattr(st, "_is_running_with_streamlit", False)):
+        run_streamlit_app()
+    else:
+        print("Running in CLI/Notebook mode. Starting diagnostic validation...")
+        evaluate_emotional_mapper(EmotionalMapper, CATEGORY_ANCHORS_VAD, READING_MAP)
