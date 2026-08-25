@@ -3376,5 +3376,3 @@ def evaluate_unified_pipeline():
 
 # Run evaluation
 evaluate_unified_pipeline()
-
-pip install streamlit
