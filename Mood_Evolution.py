@@ -454,15 +454,17 @@ class DiaryMoodClassifier:
         zero_vec = np.zeros((1, len(self.vectorizer.vocabulary_)))
         proba = self.model.predict_proba(zero_vec)[0]
         self._baseline_valence = sum(
-            p * CATEGORY_ANCHORS_VAD.get(str(c).strip().lower(), (0.0, 0.0, 0.0))[0] 
+            p * CATEGORY_ANCHORS_VAD.get(str(c).strip().lower(), (0.0, 0.0, 0.0))[0]
             for c, p in zip(self.model.classes_, proba)
         )
 
     def get_state(self):
         return {
-            "texts": self.texts, "labels": self.labels,
-            "vectorizer": self.vectorizer, "model": self.model,
-            "baseline_valence": self._baseline_valence,
+            "texts": self.texts,
+            "labels": self.labels,
+            "vectorizer": self.vectorizer,
+            "model": self.model,
+            "baseline_valence": getattr(self, "_baseline_valence", 0.0),
         }
 
     def load_state(self, state):
@@ -491,7 +493,9 @@ class DiaryMoodClassifier:
         mapped["posterior"] = posterior
         return mapped
 
-def word_score(self, word):
+    def word_score(self, word):
+        if not hasattr(self, "vectorizer") or not hasattr(self, "model"):
+            return 0.0
         X = self.vectorizer.transform([word])
         if X.nnz == 0:
             return 0.0
@@ -503,7 +507,7 @@ def word_score(self, word):
         )
         base = getattr(self, "_baseline_valence", 0.0)
         return float(raw - base)
-
+        
 def _random_theme_scores(rng):
     scores = {c: 0.0 for c in CATEGORIES}
     dominant = rng.choice(CATEGORIES)
