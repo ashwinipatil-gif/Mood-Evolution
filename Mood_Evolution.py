@@ -445,6 +445,7 @@ class DiaryMoodClassifier:
         self.vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), sublinear_tf=True)
         self.model = LogisticRegression(C=10.0, max_iter=1000, random_state=42)
         self.mapper = EmotionalMapper(CATEGORY_ANCHORS_VAD)
+        self._baseline_valence = 0.0
         self._fit()
 
     def _fit(self):
@@ -453,7 +454,8 @@ class DiaryMoodClassifier:
         zero_vec = np.zeros((1, len(self.vectorizer.vocabulary_)))
         proba = self.model.predict_proba(zero_vec)[0]
         self._baseline_valence = sum(
-            p * CATEGORY_ANCHORS_VAD[c][0] for c, p in zip(self.model.classes_, proba)
+            p * CATEGORY_ANCHORS_VAD.get(str(c).strip().lower(), (0.0, 0.0, 0.0))[0] 
+            for c, p in zip(self.model.classes_, proba)
         )
 
     def get_state(self):
@@ -464,24 +466,25 @@ class DiaryMoodClassifier:
         }
 
     def load_state(self, state):
-        self.texts = state["texts"]
-        self.labels = state["labels"]
-        self.vectorizer = state["vectorizer"]
-        self.model = state["model"]
-        self._baseline_valence = state["baseline_valence"]
+        self.texts = state.get("texts", [])
+        self.labels = state.get("labels", [])
+        self.vectorizer = state.get("vectorizer")
+        self.model = state.get("model")
+        self._baseline_valence = state.get("baseline_valence", 0.0)
         self.mapper = EmotionalMapper(CATEGORY_ANCHORS_VAD)
 
     def learn(self, text, category):
-        if category not in CATEGORY_ANCHORS_VAD:
+        cat_key = str(category).strip().lower()
+        if cat_key not in CATEGORY_ANCHORS_VAD:
             raise ValueError(f"Unknown category: {category}")
         self.texts.append(text)
-        self.labels.append(category)
+        self.labels.append(cat_key)
         self._fit()
 
     def analyze(self, text):
         X = self.vectorizer.transform([text])
         proba = self.model.predict_proba(X)[0]
-        classes = list(self.model.classes_)
+        classes = [str(c).strip().lower() for c in self.model.classes_]
         posterior = dict(zip(classes, proba))
         mapped = self.mapper.map(posterior)
         mapped["energy"] = mapped["arousal"]
@@ -493,10 +496,12 @@ class DiaryMoodClassifier:
         if X.nnz == 0:
             return 0.0
         proba = self.model.predict_proba(X)[0]
-        classes = list(self.model.classes_) 
-        raw = sum(p * CATEGORY_ANCHORS_VAD.get(cat, [0.0, 0.0, 0.0])[0] 
-        for cat, p in zip(classes, probs)
-)
+        classes = [str(c).strip().lower() for c in self.model.classes_]
+        raw = sum(
+            p * CATEGORY_ANCHORS_VAD.get(cat, (0.0, 0.0, 0.0))[0] 
+            for cat, p in zip(classes, proba)
+        )
+        return float(raw - getattr(self, "_baseline_valence", 0.0))
 
     def training_set_size(self):
         return len(self.texts)
