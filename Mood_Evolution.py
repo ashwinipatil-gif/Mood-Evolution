@@ -19,7 +19,6 @@ import hashlib
 import datetime as dt
 from datetime import datetime
 from pathlib import Path
-from helper_module import evaluate_emotional_mapper, CATEGORY_ANCHORS_VAD
 
 import numpy as np
 import pandas as pd
@@ -2132,9 +2131,4 @@ def run_streamlit_app():
 # 10. ENTRYPOINT / EXECUTION ROUTER
 # ==============================================================================
 if __name__ == "__main__":
-    if "STREAMLIT_SERVER_PORT" in os.environ or (st is not None and getattr(st, "_is_running_with_streamlit", False)):
-        run_streamlit_app()
-    else:
-        print("Running in CLI/Notebook mode. Starting diagnostic validation...")
-        mapper_instance = EmotionalMapper()
-        evaluate_emotional_mapper(mapper_instance, CATEGORY_ANCHORS_VAD, READING_MAP)
+    run_streamlit_app()
