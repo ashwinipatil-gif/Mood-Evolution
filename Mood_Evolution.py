@@ -437,7 +437,7 @@ def evaluate_emotional_mapper(mapper_cls, anchors, reading_map):
 
 
 # Run evaluation
-evaluate_emotional_mapper(EmotionalMapper, CATEGORY_ANCHORS_VAD, _READING_MAP)
+evaluate_emotional_mapper(EmotionalMapper, CATEGORY_ANCHORS_VAD, READING_MAP)
     
 
 def hsl_to_rgb01(h, s, l):
