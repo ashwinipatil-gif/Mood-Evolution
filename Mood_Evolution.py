@@ -2132,10 +2132,23 @@ def run_streamlit_app():
                 spine.set_alpha(0.15)
             ax.legend(facecolor="#14131a", edgecolor="#d9b673", labelcolor="#f2ede4", fontsize=8)
             
-
-
 # ==============================================================================
-# 10. ENTRYPOINT / EXECUTION ROUTER
+# SECTION P — EXECUTION ENTRY POINT
 # ==============================================================================
 if __name__ == "__main__":
-    run_streamlit_app()
+    # Check if running inside Streamlit Cloud or local Streamlit runner
+    is_streamlit = (
+        (st is not None and getattr(st, "runtime", None) and st.runtime.exists())
+        or "STREAMLIT_SERVER_PORT" in os.environ
+    )
+
+    if is_streamlit:
+        # Runs the lightweight web app with cached models (zero training delay)
+        run_streamlit_app()
+    else:
+        # Runs ONLY when you manually run: python mood_evolution.py
+        print("=== 1. PRE-SEEDING GLOBAL CVAE CHECKPOINT (ALL 23 CATEGORIES) ===")
+        seed_global_cvae_checkpoint(epochs=80, steps_per_category=30, verbose=True)
+
+        print("\n=== 2. RUNNING FULL EVALUATION & BENCHMARK SUITE ===")
+        run_full_pipeline_evaluation()
